@@ -22,8 +22,10 @@ module.exports = class CocoRouter extends Backbone.Router
     'account': go('account/MainAccountView')
     'account/settings': go('account/AccountSettingsRootView')
     'account/unsubscribe': go('account/UnsubscribeView')
-    'account/profile': go('user/JobProfileView')  # legacy URL, sent in emails
+    #'account/profile': go('user/JobProfileView')  # legacy URL, sent in emails
+    'account/profile': go('EmployersView')  # Show the not-recruiting-now screen
     'account/payments': go('account/PaymentsView')
+    'account/subscription': go('account/SubscriptionView')
 
     'admin': go('admin/MainAdminView')
     'admin/candidates': go('admin/CandidatesView')
@@ -65,6 +67,7 @@ module.exports = class CocoRouter extends Backbone.Router
     'editor/level/:levelID': go('editor/level/LevelEditView')
     'editor/thang': go('editor/thang/ThangTypeSearchView')
     'editor/thang/:thangID': go('editor/thang/ThangTypeEditView')
+    'editor/campaign/:campaignID': go('editor/campaign/CampaignEditorView')
 
     'employers': go('EmployersView')
 
@@ -77,18 +80,19 @@ module.exports = class CocoRouter extends Backbone.Router
     'i18n/component/:handle': go('i18n/I18NEditComponentView')
     'i18n/level/:handle': go('i18n/I18NEditLevelView')
     'i18n/achievement/:handle': go('i18n/I18NEditAchievementView')
+    'i18n/campaign/:handle': go('i18n/I18NEditCampaignView')
 
     'legal': go('LegalView')
 
     'multiplayer': go('MultiplayerView')
 
     'play-old': go('play/MainPlayView')  # This used to be 'play'.
-    'play': go('play/WorldMapView')
+    'play': go('play/CampaignView')
     'play/ladder/:levelID': go('ladder/LadderView')
     'play/ladder': go('ladder/MainLadderView')
     'play/level/:levelID': go('play/level/PlayLevelView')
     'play/spectate/:levelID': go('play/SpectateView')
-    'play/:map': go('play/WorldMapView')
+    'play/:map': go('play/CampaignView')
 
     'preview': go('HomeView')
 
@@ -97,7 +101,8 @@ module.exports = class CocoRouter extends Backbone.Router
     'test(/*subpath)': go('TestView')
 
     'user/:slugOrID': go('user/MainUserView')
-    'user/:slugOrID/profile': go('user/JobProfileView')
+    #'user/:slugOrID/profile': go('user/JobProfileView')
+    'user/:slugOrID/profile': go('EmployersView')  # Show the not-recruiting-now screen
 
     '*name': 'showNotFoundView'
 
@@ -105,7 +110,7 @@ module.exports = class CocoRouter extends Backbone.Router
     window.location.href = window.location.href
 
   routeDirectly: (path, args) ->
-    path = "views/#{path}" if not _.str.startsWith(path, 'views/')
+    path = "views/#{path}" if not _.string.startsWith(path, 'views/')
     ViewClass = @tryToLoadModule path
     if not ViewClass and application.moduleLoader.load(path)
       @listenToOnce application.moduleLoader, 'load-complete', ->
@@ -169,7 +174,7 @@ module.exports = class CocoRouter extends Backbone.Router
         callback: 'signinCallback',
         clientid: gplusClientID,
         cookiepolicy: 'single_host_origin',
-        scope: 'https://www.googleapis.com/auth/plus.login https://www.googleapis.com/auth/userinfo.email',
+        scope: 'https://www.googleapis.com/auth/plus.login email',
         height: 'short',
       }
       if gapi.signin?.render
@@ -182,7 +187,7 @@ module.exports = class CocoRouter extends Backbone.Router
     $("ul.nav li.#{base}").addClass('active')
 
   _trackPageView: ->
-    window.tracker?.trackPageView null, ['Google Analytics']
+    window.tracker?.trackPageView()
 
   onNavigate: (e) ->
     if _.isString e.viewClass

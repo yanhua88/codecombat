@@ -6,14 +6,18 @@ EarnedAchievement = require './EarnedAchievement'
 User = require '../users/User'
 Handler = require '../commons/Handler'
 LocalMongo = require '../../app/lib/LocalMongo'
+util = require '../../app/core/utils'
+LevelSession = require '../levels/sessions/LevelSession'
 
 class EarnedAchievementHandler extends Handler
   modelClass: EarnedAchievement
 
+  editableProperties: ['notified']
+
   # Don't allow POSTs or anything yet
   hasAccess: (req) ->
     return false unless req.user
-    req.method in ['GET', 'POST'] # or req.user.isAdmin()
+    req.method in ['GET', 'POST', 'PUT'] # or req.user.isAdmin()
 
   get: (req, res) ->
     return @getByAchievementIDs(req, res) if req.query.view is 'get-by-achievement-ids'
@@ -65,6 +69,10 @@ class EarnedAchievementHandler extends Handler
         return @sendNotFoundError(res, 'Could not find achievement.')
       else if not trigger
         return @sendNotFoundError(res, 'Could not find trigger.')
+      else if achievement.get('proportionalTo') and earned
+        EarnedAchievement.createForAchievement(achievement, trigger, null, earned, (earnedAchievementDoc) =>
+          @sendCreated(res, (earnedAchievementDoc or earned)?.toObject())
+        )
       else if earned
         achievementEarned = achievement.get('rewards')
         actuallyEarned = earned.get('earnedRewards')
@@ -82,10 +90,8 @@ class EarnedAchievementHandler extends Handler
             return @sendDatabaseError(res, err) if err
             return @sendSuccess(res, earned.toObject())
           )
-      else if achievement.get('proportionalTo')
-        return @sendBadInputError(res, 'Cannot currently do this to repeatable docs...')
       else
-        EarnedAchievement.createForAchievement(achievement, trigger, null, (earnedAchievementDoc) =>
+        EarnedAchievement.createForAchievement(achievement, trigger, null, null, (earnedAchievementDoc) =>
           @sendCreated(res, earnedAchievementDoc.toObject())
         )
     )
@@ -118,6 +124,7 @@ class EarnedAchievementHandler extends Handler
       res.send(earnedAchievements)
 
   recalculate: (req, res) ->
+    return @sendForbiddenError(res) unless req.user?.isAdmin()
     onSuccess = (data) => log.debug 'Finished recalculating achievements'
     if 'achievements' of req.body # Support both slugs and IDs separated by commas
       achievementSlugsOrIDs = req.body.achievements
@@ -136,7 +143,12 @@ class EarnedAchievementHandler extends Handler
       recalculatingAll = true
     t0 = new Date().getTime()
     total = 100000
-    User.count {anonymous:false}, (err, count) -> total = count
+    #testUsers = ['livelily+test37@gmail.com']
+    if testUsers?
+      userQuery = emailLower: {$in: testUsers}
+    else
+      userQuery = anonymous: false
+    User.count userQuery, (err, count) -> total = count
 
     onFinished = ->
       t1 = new Date().getTime()
@@ -154,10 +166,10 @@ class EarnedAchievementHandler extends Handler
     Achievement.find filter, (err, achievements) ->
       callback?(err) if err?
       callback?(new Error 'No achievements to recalculate') unless achievements.length
-      #log.info "Recalculating a total of #{achievements.length} achievements..."
+      log.info "Recalculating a total of #{achievements.length} achievements..."
 
       # Fetch every single user. This tends to get big so do it in a streaming fashion.
-      userStream = User.find().sort('_id').stream()
+      userStream = User.find(userQuery).sort('_id').stream()
       streamFinished = false
       usersTotal = 0
       usersFinished = 0
@@ -173,6 +185,7 @@ class EarnedAchievementHandler extends Handler
       userStream.on 'data',  (user) ->
         ++usersTotal
         numberRunning += 1
+        #return doneWithUser() if usersTotal / total < 0.96  # If it died, we can skip ahead on restart like this.
         userStream.pause() if numberRunning > 20
 
         # Keep track of a user's already achieved in order to set the notified values correctly
@@ -221,13 +234,15 @@ class EarnedAchievementHandler extends Handler
                   notified: achievement._id in alreadyEarnedIDs
 
                 if isRepeatable
-                  earned.achievedAmount = something.get(achievement.get 'proportionalTo')
+                  earned.achievedAmount = util.getByPath(something.toObject(), achievement.get 'proportionalTo') or 0
                   earned.previouslyAchievedAmount = 0
 
                   expFunction = achievement.getExpFunction()
                   newPoints = expFunction(earned.achievedAmount) * achievement.get('worth') ? 10
+                  newGems = expFunction(earned.achievedAmount) * (achievement.get('rewards')?.gems ? 0)
                 else
                   newPoints = achievement.get('worth') ? 10
+                  newGems = achievement.get('rewards')?.gems ? 0
 
                 earned.earnedPoints = newPoints
                 newTotalPoints += newPoints
@@ -235,7 +250,10 @@ class EarnedAchievementHandler extends Handler
                 earned.earnedRewards = achievement.get('rewards')
                 for rewardType in ['heroes', 'items', 'levels']
                   newTotalRewards[rewardType] = newTotalRewards[rewardType].concat(achievement.get('rewards')?[rewardType] ? [])
-                newTotalRewards.gems += achievement.get('rewards')?.gems ? 0
+                if isRepeatable and earned.earnedRewards
+                  earned.earnedRewards = _.clone earned.earnedRewards
+                  earned.earnedRewards.gems = newGems
+                newTotalRewards.gems += newGems
 
                 EarnedAchievement.update {achievement:earned.achievement, user:earned.user}, earned, {upsert: true}, (err) ->
                   doneWithAchievement err
@@ -243,8 +261,8 @@ class EarnedAchievementHandler extends Handler
               log.error err if err
               #console.log 'User', user.get('name'), 'had newTotalPoints', newTotalPoints, 'and newTotalRewards', newTotalRewards, 'previousRewards', previousRewards
               return doneWithUser(user) unless newTotalPoints or newTotalRewards.gems or _.some(newTotalRewards, (r) -> r.length)
-#              log.debug "Matched a total of #{newTotalPoints} new points"
-#              log.debug "Incrementing score for these achievements with #{newTotalPoints - previousPoints}"
+              #log.debug "Matched a total of #{newTotalPoints} new points"
+              #log.debug "Incrementing score for these achievements with #{newTotalPoints - previousPoints}"
               pointDelta = newTotalPoints - previousPoints
               pctDone = (100 * usersFinished / total).toFixed(2)
               console.log "Updated points to #{newTotalPoints} (#{if pointDelta < 0 then '' else '+'}#{pointDelta}) for #{user.get('name') or '???'} (#{user.get('_id')}) (#{pctDone}%)"

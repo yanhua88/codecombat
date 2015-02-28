@@ -7,8 +7,10 @@ SpriteBuilder = require 'lib/sprites/SpriteBuilder'
 AudioPlayer = require 'lib/AudioPlayer'
 utils = require 'core/utils'
 BuyGemsModal = require 'views/play/modal/BuyGemsModal'
+AuthModal = require 'views/core/AuthModal'
 Purchase = require 'models/Purchase'
-LevelOptions = require 'lib/LevelOptions'
+LayerAdapter = require 'lib/surface/LayerAdapter'
+Lank = require 'lib/surface/Lank'
 
 module.exports = class PlayHeroesModal extends ModalView
   className: 'modal fade play-modal'
@@ -27,7 +29,7 @@ module.exports = class PlayHeroesModal extends ModalView
   shortcuts:
     'left': -> @$el.find('#hero-carousel').carousel('prev') if @heroes.models.length and not @$el.hasClass 'secret'
     'right': -> @$el.find('#hero-carousel').carousel('next') if @heroes.models.length and not @$el.hasClass 'secret'
-    'enter': 'saveAndHide'
+    'enter': -> @saveAndHide() if @visibleHero and not @visibleHero.locked
 
   constructor: (options) ->
     super options
@@ -40,23 +42,24 @@ module.exports = class PlayHeroesModal extends ModalView
     @listenToOnce @heroes, 'sync', @onHeroesLoaded
     @supermodel.loadCollection(@heroes, 'heroes')
     @stages = {}
+    @layers = []
     @session = options.session
     @initCodeLanguageList options.hadEverChosenHero
-    @heroAnimationInterval = setInterval @animateHeroes, 2500
+    @heroAnimationInterval = setInterval @animateHeroes, 1000
 
   onHeroesLoaded: ->
     @formatHero hero for hero in @heroes.models
 
   formatHero: (hero) ->
-    hero.name = utils.i18n hero.attributes, 'extendedName' # or whatever the property name ends up being
+    hero.name = utils.i18n hero.attributes, 'extendedName'
     hero.name ?= utils.i18n hero.attributes, 'name'
     hero.description = utils.i18n hero.attributes, 'description'
     hero.unlockLevelName = utils.i18n hero.attributes, 'unlockLevelName'
     original = hero.get('original')
     hero.locked = not me.ownsHero(original)
     hero.purchasable = hero.locked and (original in (me.get('earned')?.heroes ? []))
-    if @options.levelID and allowedHeroSlugs = LevelOptions[@options.levelID]?.allowedHeroes
-      hero.restricted = not (hero.get('slug') in allowedHeroSlugs)
+    if @options.level and allowedHeroes = @options.level.get 'allowedHeroes'
+      hero.restricted = not (hero.get('original') in allowedHeroes)
     hero.class = (hero.get('heroClass') or 'warrior').toLowerCase()
     hero.stats = hero.getHeroStats()
 
@@ -69,25 +72,26 @@ module.exports = class PlayHeroesModal extends ModalView
     context.confirmButtonI18N = @confirmButtonI18N
     context.visibleHero = @visibleHero
     context.gems = me.gems()
+    context.isIE = @isIE()
     context
 
   afterRender: ->
     super()
     return unless @supermodel.finished()
+    @$el.find('.hero-avatar').addClass 'ie' if @isIE()
     heroes = @heroes.models
     @$el.find('.hero-indicator').each ->
       heroID = $(@).data('hero-id')
       hero = _.find heroes, (hero) -> hero.get('original') is heroID
-      $(@).find('.hero-avatar').css('background-image', "url(#{hero.getPortraitURL()})").tooltip()
+      $(@).find('.hero-avatar').css('background-image', "url(#{hero.getPortraitURL()})").addClass('has-tooltip').tooltip()
     @canvasWidth = 313  # @$el.find('canvas').width() # unreliable, whatever
     @canvasHeight = @$el.find('canvas').height()
     heroConfig = @options?.session?.get('heroConfig') ? me.get('heroConfig') ? {}
     heroIndex = Math.max 0, _.findIndex(heroes, ((hero) -> hero.get('original') is heroConfig.thangType))
     @$el.find(".hero-item:nth-child(#{heroIndex + 1}), .hero-indicator:nth-child(#{heroIndex + 1})").addClass('active')
     @onHeroChanged direction: null, relatedTarget: @$el.find('.hero-item')[heroIndex]
-    @$el.find('.hero-stat').tooltip()
+    @$el.find('.hero-stat').addClass('has-tooltip').tooltip()
     @buildCodeLanguages()
-    Backbone.Mediator.publish 'audio-player:play-sound', trigger: 'game-menu-open', volume: 1
 
   rerenderFooter: ->
     @formatHero @visibleHero
@@ -155,41 +159,32 @@ module.exports = class PlayHeroesModal extends ModalView
         @rerenderFooter()
         return
       canvas.show().prop width: @canvasWidth, height: @canvasHeight
-      builder = new SpriteBuilder(fullHero)
-      movieClip = builder.buildMovieClip(fullHero.get('actions').attack?.animation ? fullHero.get('actions').idle.animation)
-      movieClip.scaleX = movieClip.scaleY = canvas.prop('height') / 120  # Average hero height is ~110px tall at normal resolution
-      movieClip.regX = -fullHero.get('positions').registration.x
-      movieClip.regY = -fullHero.get('positions').registration.y
-      movieClip.x = canvas.prop('width') * 0.5
-      movieClip.y = canvas.prop('height') * 0.925  # This is where the feet go.
-      if fullHero.get('name') is 'Knight'
-        movieClip.scaleX *= 0.7
-        movieClip.scaleY *= 0.7
-      if fullHero.get('name') is 'Potion Master'
-        movieClip.scaleX *= 0.9
-        movieClip.scaleY *= 0.9
-        movieClip.regX *= 1.1
-        movieClip.regY *= 1.4
-      if fullHero.get('name') is 'Samurai'
-        movieClip.scaleX *= 0.7
-        movieClip.scaleY *= 0.7
-        movieClip.regX *= 1.2
-        movieClip.regY *= 1.35
-      if fullHero.get('name') is 'Librarian'
-        movieClip.regX *= 0.7
-        movieClip.regY *= 1.2
-      if fullHero.get('name') is 'Sorcerer'
-        movieClip.scaleX *= 0.9
-        movieClip.scaleY *= 0.9
-        movieClip.regX *= 1.15
-        movieClip.regY *= 1.3
 
-      stage = new createjs.Stage(canvas[0])
+      layer = new LayerAdapter({webGL:true})
+      @layers.push layer
+      layer.resolutionFactor = 8 # hi res!
+      layer.buildAsync = false
+      multiplier = 7
+      layer.scaleX = layer.scaleY = multiplier
+      lank = new Lank(fullHero, {preloadSounds: false})
+
+      layer.addLank(lank)
+      layer.on 'new-spritesheet', ->
+        #- maybe put some more normalization here?
+        m = multiplier
+        m *= 0.75 if fullHero.get('slug') in ['knight', 'samurai', 'librarian', 'sorcerer'] # these heroes are larger for some reason, shrink 'em
+        layer.container.scaleX = layer.container.scaleY = m
+        layer.container.children[0].x = 160/m
+        layer.container.children[0].y = 250/m
+        if fullHero.get('slug') in ['forest-archer', 'librarian', 'sorcerer', 'potion-master']
+          layer.container.children[0].y -= 3
+        if fullHero.get('slug') in ['librarian', 'sorcerer', 'potion-master']
+          layer.container.children[0].x -= 3
+
+      stage = new createjs.SpriteStage(canvas[0])
       @stages[heroIndex] = stage
-      stage.addChild movieClip
+      stage.addChild layer.container
       stage.update()
-      movieClip.loop = false
-      movieClip.gotoAndPlay 0
       unless preloading
         createjs.Ticker.addEventListener 'tick', stage
         @playSelectionSound hero
@@ -203,7 +198,8 @@ module.exports = class PlayHeroesModal extends ModalView
   animateHeroes: =>
     return unless @visibleHero
     heroIndex = Math.max 0, _.findIndex(@heroes.models, ((hero) => hero.get('original') is @visibleHero.get('original')))
-    @stages[heroIndex]?.children?[0]?.gotoAndPlay? 0
+    animation = _.sample(['attack', 'move_side', 'move_fore'])  # Must be in LayerAdapter default actions.
+    @stages[heroIndex]?.children?[0]?.children?[0]?.gotoAndPlay? animation
 
   playSelectionSound: (hero) ->
     return if @$el.hasClass 'secret'
@@ -263,9 +259,12 @@ module.exports = class PlayHeroesModal extends ModalView
       @$el.one 'click', (e) ->
         button.removeClass('confirm').text($.i18n.t('play.unlock')) if e.target isnt button[0]
 
+  askToSignUp: ->
+    authModal = new AuthModal supermodel: @supermodel
+    authModal.mode = 'signup'
+    return @openModalView authModal
+
   askToBuyGems: (unlockButton) ->
-    if me.getGemPromptGroup() is 'no-prompt'
-      return @openModalView new BuyGemsModal()
     @$el.find('.unlock-button').popover 'destroy'
     popoverTemplate = buyGemsPromptTemplate {}
     unlockButton.popover(
@@ -281,6 +280,7 @@ module.exports = class PlayHeroesModal extends ModalView
 
   onBuyGemsPromptButtonClicked: (e) ->
     @playSound 'menu-button-click'
+    return @askToSignUp() if me.get('anonymous')
     @openModalView new BuyGemsModal()
 
   onClickedSomewhere: (e) ->
@@ -292,8 +292,16 @@ module.exports = class PlayHeroesModal extends ModalView
 
   saveAndHide: ->
     hero = @selectedHero?.get('original')
+    hero ?= @visibleHero?.get('original') if @visibleHero?.loaded and not @visibleHero.locked
     unless hero
       console.error 'Somehow we tried to hide without having a hero selected yet...'
+      noty {
+        text: "Error: hero not loaded. If this keeps happening, please report the bug."
+        layout: 'topCenter'
+        timeout: 10000
+        type: 'error'
+      }
+      return
 
     if @session
       changed = @updateHeroConfig(@session, hero)
@@ -333,4 +341,5 @@ module.exports = class PlayHeroesModal extends ModalView
     for heroIndex, stage of @stages
       createjs.Ticker.removeEventListener "tick", stage
       stage.removeAllChildren()
+    layer.destroy() for layer in @layers
     super()

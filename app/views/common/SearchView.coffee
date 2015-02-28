@@ -6,11 +6,11 @@ app = require 'core/application'
 class SearchCollection extends Backbone.Collection
   initialize: (modelURL, @model, @term, @projection) ->
     @url = "#{modelURL}?project="
-    if @projection? and not (@projection == [])
+    if @projection?.length
       @url += 'created,permissions'
-      @url += ',' + projected for projected in projection
+      @url += ',' + projected for projected in @projection
     else @url += 'true'
-    @url += "&term=#{term}" if @term
+    @url += "&term=#{@term}" if @term
 
   comparator: (a, b) ->
     score = 0

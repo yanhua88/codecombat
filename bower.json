@@ -28,7 +28,7 @@
     "lodash": "~2.4.1",
     "backbone": "1.1.0",
     "jquery-mousewheel": "~3.1.9",
-    "i18next": "git://github.com/nwinter/i18next.git",
+    "i18next": "https://github.com/nwinter/i18next.git",
     "firepad": "~0.1.2",
     "marked": "~0.3.0",
     "moment": "~2.5.0",
@@ -46,7 +46,8 @@
     "zatanna": "https://github.com/differentmatt/zatanna.git#master",
     "modernizr": "~2.8.3",
     "backfire": "~0.3.0",
-    "fastclick": "~1.0.3"
+    "fastclick": "~1.0.3",
+    "three.js": "*"
   },
   "overrides": {
     "backbone": {

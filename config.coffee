@@ -4,10 +4,11 @@ _.str = require 'underscore.string'
 sysPath = require 'path'
 fs = require('fs')
 commonjsHeader = fs.readFileSync('node_modules/brunch/node_modules/commonjs-require-definition/require.js', {encoding: 'utf8'})
+TRAVIS = process.env.COCO_TRAVIS_TEST
 
 
 #- regJoin replace a single '/' with '[\/\\]' so it can handle either forward or backslash
-regJoin = (s) -> new RegExp(s.replace(/\//, '[\\\/\\\\]'))
+regJoin = (s) -> new RegExp(s.replace(/\//g, '[\\\/\\\\]'))
 
 
 #- Build the config
@@ -55,8 +56,12 @@ exports.config =
           regJoin('^app/core')
           regJoin('^app/views/core')
           'app/locale/locale.coffee'
+          'app/locale/en.coffee'
           'app/lib/sprites/SpriteBuilder.coffee' # loaded by ThangType
         ]
+
+        #- Karma is a bit more tricky to get to work. For now just dump everything into one file so it doesn't need to load anything through ModuleLoader.
+        'javascripts/whole-app.js': if TRAVIS then regJoin('^app') else []
 
         #- Wads. Groups of modules by folder which are loaded as a group when needed.
         'javascripts/app/lib.js': regJoin('^app/lib')
@@ -75,10 +80,14 @@ exports.config =
 
         #- vendor.js, all the vendor libraries
         'javascripts/vendor.js': [
-          regJoin('^vendor/scripts/(?!(Box2d|coffeescript|difflib|diffview))')
-          regJoin('^bower_components/(?!(aether|d3|treema))')
+          regJoin('^vendor/scripts/(?!(Box2d|coffeescript|difflib|diffview|jasmine))')
+          regJoin('^bower_components/(?!(aether|d3|treema|three.js))')
           'bower_components/treema/treema-utils.js'
         ]
+        'javascripts/whole-vendor.js': if TRAVIS then [
+          regJoin('^vendor/scripts/(?!(Box2d|jasmine))')
+          regJoin('^bower_components/(?!aether)')
+        ] else []
 
         #- Other vendor libraries in separate bunches
 
@@ -101,15 +110,25 @@ exports.config =
         'javascripts/app/vendor/difflib.js': 'vendor/scripts/difflib.js'
         'javascripts/app/vendor/diffview.js': 'vendor/scripts/diffview.js'
         'javascripts/app/vendor/treema.js': 'bower_components/treema/treema.js'
+        'javascripts/app/vendor/jasmine-bundle.js': regJoin('^vendor/scripts/jasmine')
+        'javascripts/app/vendor/jasmine-mock-ajax.js': 'vendor/scripts/jasmine-mock-ajax.js'
+        'javascripts/app/vendor/three.js': 'bower_components/three.js/three.min.js'
 
         #- test, demo libraries
-        'javascripts/test-app.js': regJoin('^test/app/')
+        'javascripts/app/tests.js': regJoin('^test/app/')
         'javascripts/demo-app.js': regJoin('^test/demo/')
 
         #- More output files are generated at the below
 
       order:
         before: [
+          # jasmine-bundle.js ordering
+          'vendor/scripts/jasmine.js'
+          'vendor/scripts/jasmine-html.js'
+          'vendor/scripts/jasmine-boot.js'
+          'vendor/scripts/jasmine-mock-ajax.js'
+
+          # vendor.js ordering
           'bower_components/jquery/dist/jquery.js'
           'bower_components/lodash/dist/lodash.js'
           'bower_components/backbone/backbone.js'
@@ -148,6 +167,7 @@ exports.config =
         'javascripts/app/views/play.js': regJoin('^app/templates/play')
         'javascripts/app/views/game-menu.js': regJoin('^app/templates/game-menu')
         'javascripts/app/views/editor.js': regJoin('^app/templates/editor')
+        'javascripts/whole-app.js': if TRAVIS then regJoin('^app/templates') else []
 
   framework: 'backbone'
 
@@ -178,11 +198,8 @@ exports.config =
 
   modules:
     definition: (path, data) ->
-      needHeaders = [
-        'public/javascripts/app.js'
-        'public/javascripts/world.js'
-      ]
-      defn = if path in needHeaders then commonjsHeader else ''
+      needHeaderExpr = regJoin('^public/javascripts/?(app.js|world.js|whole-app.js)')
+      defn = if path.match(needHeaderExpr) then commonjsHeader else ''
       return defn
 
 #- Find all .coffee and .jade files in /app

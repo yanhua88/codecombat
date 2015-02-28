@@ -101,6 +101,19 @@ $level-resize-transition-time: 0.5s
     &.flag-color-selected
       cursor: crosshair
 
+  #ascii-surface
+    position: absolute
+    z-index: 3
+    top: 0
+    left: 0
+    pointer-events: none
+    white-space: pre
+    font-family: Courier, monospace
+    color: white
+    background-color: rgba(14, 59, 130, 0.25)
+    transform-origin: 0 0 0
+    line-height: 15px
+
   min-width: 1024px
   position: relative
 
@@ -187,7 +200,7 @@ $level-resize-transition-time: 0.5s
 
   #play-footer
     text-align: center
-    font-family: "Open Sans Condensed"
+    font-family: $headings-font-family
     font-variant: small-caps
     font-size: 25px
     padding: 10px 0
@@ -206,16 +219,14 @@ $level-resize-transition-time: 0.5s
         @include opacity(1)
     
     @media screen and (min-aspect-ratio: 17/10)
-      display: none
+      &:not(.premium)
+        display: none
 
-    .hour-of-code-explanation
-      margin-top: 5px
-      color: white
-      font-size: 12px
-
-      a
-        color: white
-        text-decoration: underline
+  #level-footer-shadow
+    position: absolute
+    width: 100%
+    height: 30px
+    background: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,0) 100%)
 
   #fullscreen-editor-background-screen
     background-color: black
@@ -279,3 +290,14 @@ body.ipad #level-view
     canvas
       margin: 0 auto
       overflow: hidden
+
+#level-footer-background
+  display: none
+  position: absolute
+  background: transparent url(/images/level/footer_background.jpg) no-repeat
+  bottom: 0
+  width: 100%
+  background-size: 100% 400px
+  height: 400px
+  z-index: -9001
+  @include opacity(0.25)

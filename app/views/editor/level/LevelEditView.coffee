@@ -40,7 +40,7 @@ module.exports = class LevelEditView extends RootView
     'click .play-with-team-button': 'onPlayLevel'
     'click .play-with-team-parent': 'onPlayLevelTeamSelect'
     'click #commit-level-start-button': 'startCommittingLevel'
-    'click #fork-start-button': 'startForking'
+    'click li:not(.disabled) > #fork-start-button': 'startForking'
     'click #level-history-button': 'showVersionHistory'
     'click #undo-button': 'onUndo'
     'mouseenter #undo-button': 'showUndoDescription'
@@ -50,7 +50,7 @@ module.exports = class LevelEditView extends RootView
     'click #components-tab': -> @subviews.editor_level_components_tab_view.refreshLevelThangsTreema @level.get('thangs')
     'click #level-patch-button': 'startPatchingLevel'
     'click #level-watch-button': 'toggleWatchLevel'
-    'click #pop-level-i18n-button': 'onPopulateI18N'
+    'click li:not(.disabled) > #pop-level-i18n-button': 'onPopulateI18N'
     'click a[href="#editor-level-documentation"]': 'onClickDocumentationTab'
     'mouseup .nav-tabs > li a': 'toggleTab'
 
@@ -63,16 +63,21 @@ module.exports = class LevelEditView extends RootView
     @files = new DocumentFiles(@levelLoader.level)
     @supermodel.loadCollection(@files, 'file_names')
 
+  destroy: ->
+    clearInterval @timerIntervalID
+    super()
+
   showLoading: ($el) ->
     $el ?= @$el.find('.outer-content')
     super($el)
-    
+
   getTitle: -> "LevelEditor - " + (@level.get('name') or '...')
 
   onLoaded: ->
     _.defer =>
       @world = @levelLoader.world
       @render()
+      @timerIntervalID = setInterval @incrementBuildTime, 1000
 
   getRenderData: (context={}) ->
     context = super(context)
@@ -137,11 +142,11 @@ module.exports = class LevelEditView extends RootView
 
   showUndoDescription: ->
     undoDescription = TreemaNode.getLastTreemaWithFocus().getUndoDescription()
-    @$el.find('#undo-button').attr('title', 'Undo ' + undoDescription + ' (Ctrl+Z)')
+    @$el.find('#undo-button').attr('title', $.i18n.t("general.undo_prefix") + " " + undoDescription + " " + $.i18n.t("general.undo_shortcut"))
 
   showRedoDescription: ->
     redoDescription = TreemaNode.getLastTreemaWithFocus().getRedoDescription()
-    @$el.find('#redo-button').attr('title', 'Redo ' + redoDescription + ' (Ctrl+Shift+Z)')
+    @$el.find('#redo-button').attr('title', $.i18n.t("general.redo_prefix") + " " + redoDescription + " " + $.i18n.t("general.redo_shortcut"))
 
   getCurrentView: ->
     currentViewID = @$el.find('.tab-pane.active').attr('id')
@@ -154,7 +159,7 @@ module.exports = class LevelEditView extends RootView
     Backbone.Mediator.publish 'editor:view-switched', {}
 
   startCommittingLevel: (e) ->
-    @openModalView new SaveLevelModal level: @level, supermodel: @supermodel
+    @openModalView new SaveLevelModal level: @level, supermodel: @supermodel, buildTime: @levelBuildTime
     Backbone.Mediator.publish 'editor:view-switched', {}
 
   startForking: (e) ->
@@ -170,7 +175,7 @@ module.exports = class LevelEditView extends RootView
     button = @$el.find('#level-watch-button')
     @level.watch(button.find('.watch').is(':visible'))
     button.find('> span').toggleClass('secret')
-    
+
   onPopulateI18N: ->
     @level.populateI18N()
     f = -> document.location.reload()
@@ -192,3 +197,8 @@ module.exports = class LevelEditView extends RootView
     return if @initializedDocs
     @initializedDocs = true
     @$el.find('a[href="#components-documentation-view"]').click()
+
+  incrementBuildTime: =>
+    return if application.userIsIdle
+    @levelBuildTime ?= @level.get('buildTime') ? 0
+    ++@levelBuildTime

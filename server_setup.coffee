@@ -50,19 +50,21 @@ setupErrorMiddleware = (app) ->
       res.status(err.status ? 500).send(error: "Something went wrong!")
       message = "Express error: #{req.method} #{req.path}: #{err.message}"
       log.error "#{message}, stack: #{err.stack}"
-      hipchat.sendTowerHipChatMessage(message)
+      hipchat.sendHipChatMessage(message, ['tower'], {papertrail: true})
     else
       next(err)
+
 setupExpressMiddleware = (app) ->
   if config.isProduction
     express.logger.format('prod', productionLogging)
     app.use(express.logger('prod'))
     app.use express.compress filter: (req, res) ->
+      return false if req.headers.host is 'codecombat.com'  # CloudFlare will gzip it for us on codecombat.com
       compressible res.getHeader('Content-Type')
   else
     express.logger.format('dev', developmentLogging)
     app.use(express.logger('dev'))
-  app.use(express.static(path.join(__dirname, 'public')))
+  app.use(express.static(path.join(__dirname, 'public'), maxAge: 0))  # CloudFlare overrides maxAge, and we don't want local development caching.
   app.use(useragent.express())
 
   app.use(express.favicon())
@@ -126,25 +128,15 @@ setupJavascript404s = (app) ->
 
 setupFallbackRouteToIndex = (app) ->
   app.all '*', (req, res) ->
-    if req.user
-      sendMain(req, res)
-      req.user.set('lastIP', req.connection.remoteAddress)
-      req.user.save()
-    else
-      user = auth.makeNewUser(req)
-      makeNext = (req, res) -> -> sendMain(req, res)
-      next = makeNext(req, res)
-      auth.loginUser(req, res, user, false, next)
-
-sendMain = (req, res) ->
-  fs.readFile path.join(__dirname, 'public', 'main.html'), 'utf8', (err, data) ->
-    log.error "Error modifying main.html: #{err}" if err
-    # insert the user object directly into the html so the application can have it immediately. Sanitize </script>
-    data = data.replace('"userObjectTag"', JSON.stringify(UserHandler.formatEntity(req, req.user)).replace(/\//g, '\\/'))
-    res.header 'Cache-Control', 'no-cache, no-store, must-revalidate'
-    res.header 'Pragma', 'no-cache'
-    res.header 'Expires', 0
-    res.send 200, data
+    fs.readFile path.join(__dirname, 'public', 'main.html'), 'utf8', (err, data) ->
+      log.error "Error modifying main.html: #{err}" if err
+      # insert the user object directly into the html so the application can have it immediately. Sanitize </script>
+      user = if req.user then JSON.stringify(UserHandler.formatEntity(req, req.user)).replace(/\//g, '\\/') else '{}'
+      data = data.replace('"userObjectTag"', user)
+      res.header 'Cache-Control', 'no-cache, no-store, must-revalidate'
+      res.header 'Pragma', 'no-cache'
+      res.header 'Expires', 0
+      res.send 200, data
 
 setupFacebookCrossDomainCommunicationRoute = (app) ->
   app.get '/channel.html', (req, res) ->

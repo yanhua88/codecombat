@@ -1,10 +1,11 @@
 @import "app/styles/mixins"
 @import "app/styles/bootstrap/variables"
 
-$heroCanvasHeight: 265px
+$heroCanvasHeight: 275px
 
 #play-heroes-modal
-  
+  @include user-select(none)
+
   //- Clear modal defaults
   
   .modal-dialog
@@ -43,7 +44,7 @@ $heroCanvasHeight: 265px
     top: 470px
 
     #gems-count
-      font-family: 'Open Sans Condensed'
+      font-family: $headings-font-family
       font-size: 24.5px
       color: lighten(rgb(1,64,91), 50%)
 
@@ -108,6 +109,9 @@ $heroCanvasHeight: 265px
             .hero-avatar
               background-color: goldenrod
               @include filter(contrast(50%) brightness(65%))
+
+              &.ie
+                @include opacity(0.35)
 
             .lock-indicator
               position: absolute
@@ -187,16 +191,17 @@ $heroCanvasHeight: 265px
 
       .hero-stats
         color: white
+        @include user-select(initial)
 
         h2
           margin-top: 0px
           color: white
           
         .hero-description
-          margin-bottom: 10px
+          margin-bottom: 7px
         
         .hero-stat-row
-          margin: 5px 0
+          margin: 4px 0
           
           .stat-label
             float: left
@@ -261,6 +266,9 @@ $heroCanvasHeight: 265px
 
   //- Different footer states
 
+  #hero-footer
+    @include user-select(initial)
+
   #purchasable-hero-explanation, #loading-hero-explanation
     position: absolute
     left: 32px
@@ -297,7 +305,7 @@ $heroCanvasHeight: 265px
     text-align: center
     text-transform: uppercase
     font-size: 24.5px
-    font-family: Open Sans Condensed
+    font-family: $headings-font-family
     color: white
 
   #purchase-hero-button
@@ -401,7 +409,7 @@ $heroCanvasHeight: 265px
     text-align: center
     text-transform: uppercase
     font-size: 26px
-    font-family: Open Sans Condensed
+    font-family: $headings-font-family
     color: white
   
 
@@ -409,3 +417,7 @@ body.ipad #play-heroes-modal
   // iPad is Python-only for now, and has its own reset button.
   .form
     display: none
+    
+body[lang='ru']
+  #play-heroes-modal #confirm-button
+    font-size: 14px

@@ -9,6 +9,7 @@ errors = require '../commons/errors'
 async = require 'async'
 log = require 'winston'
 moment = require 'moment'
+AnalyticsLogEvent = require '../analytics/AnalyticsLogEvent'
 LevelSession = require '../levels/sessions/LevelSession'
 LevelSessionHandler = require '../levels/sessions/level_session_handler'
 SubscriptionHandler = require '../payments/subscription_handler'
@@ -16,6 +17,8 @@ DiscountHandler = require '../payments/discount_handler'
 EarnedAchievement = require '../achievements/EarnedAchievement'
 UserRemark = require './remarks/UserRemark'
 {isID} = require '../lib/utils'
+hipchat = require '../hipchat'
+sendwithus = require '../sendwithus'
 
 serverProperties = ['passwordHash', 'emailLower', 'nameLower', 'passwordReset', 'lastIP']
 candidateProperties = [
@@ -24,6 +27,8 @@ candidateProperties = [
 
 UserHandler = class UserHandler extends Handler
   modelClass: User
+
+  allowedMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
   getEditableProperties: (req, document) ->
     props = super req, document
@@ -107,14 +112,14 @@ UserHandler = class UserHandler extends Handler
         return callback({res: r, code: 409}) if otherUser
         user.set('name', req.body.name)
         callback(null, req, user)
-        
+
     # Subscription setting
     (req, user, callback) ->
       return callback(null, req, user) unless req.headers['x-change-plan'] # ensure only saves that are targeted at changing the subscription actually affect the subscription
       return callback(null, req, user) unless req.body.stripe
       hasPlan = user.get('stripe')?.planID?
       wantsPlan = req.body.stripe.planID?
-      
+
       return callback(null, req, user) if hasPlan is wantsPlan
       if wantsPlan and not hasPlan
         SubscriptionHandler.subscribeUser(req, user, (err) ->
@@ -156,7 +161,7 @@ UserHandler = class UserHandler extends Handler
   getNamesByIDs: (req, res) ->
     ids = req.query.ids or req.body.ids
     returnWizard = req.query.wizard or req.body.wizard
-    properties = if returnWizard then 'name wizard' else 'name'
+    properties = if returnWizard then 'name wizard firstName lastName' else 'name firstName lastName'
     @getPropertiesFromMultipleDocuments res, User, properties, ids
 
   nameToID: (req, res, name) ->
@@ -167,11 +172,12 @@ UserHandler = class UserHandler extends Handler
   getSimulatorLeaderboard: (req, res) ->
     queryParameters = @getSimulatorLeaderboardQueryParameters(req)
     leaderboardQuery = User.find(queryParameters.query).select('name simulatedBy simulatedFor').sort({'simulatedBy': queryParameters.sortOrder}).limit(queryParameters.limit)
+    leaderboardQuery.cache() if req.query.scoreOffset is -1
     leaderboardQuery.exec (err, otherUsers) ->
-        otherUsers = _.reject otherUsers, _id: req.user._id if req.query.scoreOffset isnt -1
-        otherUsers ?= []
-        res.send(otherUsers)
-        res.end()
+      otherUsers = _.reject otherUsers, _id: req.user._id if req.query.scoreOffset isnt -1
+      otherUsers ?= []
+      res.send(otherUsers)
+      res.end()
 
   getMySimulatorLeaderboardRank: (req, res) ->
     req.query.order = 1
@@ -208,10 +214,30 @@ UserHandler = class UserHandler extends Handler
     @put(req, res)
 
   hasAccessToDocument: (req, document) ->
-    if req.route.method in ['put', 'post', 'patch']
+    if req.route.method in ['put', 'post', 'patch', 'delete']
       return true if req.user?.isAdmin()
       return req.user?._id.equals(document._id)
     return true
+
+  delete: (req, res, userID) ->
+    # Instead of just deleting the User object, we should remove all the properties except for _id
+    # And add a `deleted: true` property
+    @getDocumentForIdOrSlug userID, (err, user) => # Check first
+      return @sendDatabaseError res, err if err
+      return @sendNotFoundError res unless user
+      return @sendForbiddenError res unless @hasAccessToDocument(req, user)
+      obj = user.toObject()
+      for prop, val of obj
+        user.set(prop, undefined) unless prop is '_id'
+      user.set('deleted', true)
+
+      # Hack to get saving of Users to work. Probably should replace these props with strings
+      # so that validation doesn't get hung up on Date objects in the documents.
+      delete obj.dateCreated
+
+      user.save (err) =>
+        return @sendDatabaseError(res, err) if err
+        @sendNoContent res
 
   getByRelationship: (req, res, args...) ->
     return @agreeToCLA(req, res) if args[1] is 'agreeToCLA'
@@ -231,6 +257,7 @@ UserHandler = class UserHandler extends Handler
     return @getRemark(req, res, args[0]) if args[1] is 'remark'
     return @searchForUser(req, res) if args[1] is 'admin_search'
     return @getStripeInfo(req, res, args[0]) if args[1] is 'stripe'
+    return @sendOneTimeEmail(req, res, args[0]) if args[1] is 'send_one_time_email'
     return @sendNotFoundError(res)
     super(arguments...)
 
@@ -238,10 +265,59 @@ UserHandler = class UserHandler extends Handler
     @getDocumentForIdOrSlug handle, (err, user) =>
       return @sendNotFoundError(res) if not user
       return @sendForbiddenError(res) unless req.user and (req.user.isAdmin() or req.user.get('_id').equals(user.get('_id')))
-      return @sendNotFoundError(res) #if not customerID = user.get('stripe')?.customerID
+      return @sendNotFoundError(res) if not customerID = user.get('stripe')?.customerID
       stripe.customers.retrieve customerID, (err, customer) =>
         return @sendDatabaseError(res, err) if err
         @sendSuccess(res, JSON.stringify(customer, null, '\t'))
+
+  sendOneTimeEmail: (req, res) ->
+    # TODO: Should this API be somewhere else?
+    # TODO: Where should email types be stored?
+    # TODO: How do we schema validate an update db call?
+
+    return @sendForbiddenError(res) unless req.user
+    email = req.query.email or req.body.email
+    type = req.query.type or req.body.type
+    return @sendBadInputError res, 'No email given.' unless email?
+    return @sendBadInputError res, 'No type given.' unless type?
+
+    # log.warn "sendOneTimeEmail #{type} #{email}"
+
+    unless type in ['subscribe modal parent', 'share progress modal parent', 'share progress modal friend']
+      return @sendBadInputError res, "Unknown one-time email type #{type}"
+
+    sendMail = (emailParams) =>
+      sendwithus.api.send emailParams, (err, result) =>
+        if err
+          log.error "sendwithus one-time email error: #{err}, result: #{result}"
+          return @sendError res, 500, 'send mail failed.'
+        req.user.update {$push: {"emails.oneTimes": {type: type, email: email, sent: new Date()}}}, (err) =>
+          return @sendDatabaseError(res, err) if err
+          @sendSuccess(res, {result: 'success'})
+          AnalyticsLogEvent.logEvent req.user, 'Sent one time email', email: email, type: type
+
+    # Generic email data
+    emailParams =
+      recipient:
+        address: email
+      email_data:
+        name: req.user.get('name') or ''
+    if codeLanguage = req.user.get('aceConfig.language')
+      codeLanguage = codeLanguage[0].toUpperCase() + codeLanguage.slice(1)
+      emailParams['email_data']['codeLanguage'] = codeLanguage
+    if senderEmail = req.user.get('email')
+      emailParams['email_data']['senderEmail'] = senderEmail
+
+    # Type-specific email data
+    if type is 'subscribe modal parent'
+      emailParams['email_id'] = sendwithus.templates.parent_subscribe_email
+    else if type in ['share progress modal parent', 'share progress modal friend']
+      emailParams['email_id'] = sendwithus.templates.share_progress_email
+      emailParams['email_data']['premium'] = req.user.isPremium()
+      emailParams['email_data']['parent'] = type is 'share progress modal parent'
+      emailParams['email_data']['friend'] =  type is 'share progress modal friend'
+
+    sendMail emailParams
 
   agreeToCLA: (req, res) ->
     return @sendForbiddenError(res) unless req.user
@@ -259,6 +335,7 @@ UserHandler = class UserHandler extends Handler
         req.user.save (err) =>
           return @sendDatabaseError(res, err) if err
           @sendSuccess(res, {result: 'success'})
+          hipchat.sendHipChatMessage "#{req.body.githubUsername or req.user.get('name')} just signed the CLA.", ['main']
 
   avatar: (req, res, id) ->
     @modelClass.findById(id).exec (err, document) =>
@@ -316,9 +393,6 @@ UserHandler = class UserHandler extends Handler
       EarnedAchievement.find(query).sort(changed: -1).exec (err, documents) =>
         return @sendDatabaseError(res, err) if err?
         cleandocs = (@formatEntity(req, doc) for doc in documents)
-        for doc in documents  # TODO Ruben Maybe move this logic elsewhere
-          doc.set('notified', true)
-          doc.save()
         @sendSuccess(res, cleandocs)
 
   getRecentlyPlayed: (req, res, userID) ->
@@ -375,6 +449,7 @@ UserHandler = class UserHandler extends Handler
 
   getCandidates: (req, res) ->
     return @sendForbiddenError(res) unless req.user
+    return @sendForbiddenError(res)  # No one can view the candidates, since in a rush, we deleted their index!
     authorized = req.user.isAdmin() or ('employer' in (req.user.get('permissions') ? []))
     months = if req.user.isAdmin() then 12 else 2
     since = (new Date((new Date()) - months * 30.4 * 86400 * 1000)).toISOString()
@@ -410,6 +485,7 @@ UserHandler = class UserHandler extends Handler
 
   getEmployers: (req, res) ->
     return @sendForbiddenError(res) unless req.user?.isAdmin()
+    return @sendForbiddenError(res)  # No one can view the employers, since in a rush, we deleted their index!
     query = {employerAt: {$exists: true, $ne: ''}}
     selection = 'name firstName lastName email activity signedEmployerAgreement photoURL employerAt'
     User.find(query).select(selection).lean().exec (err, documents) =>
@@ -465,18 +541,23 @@ UserHandler = class UserHandler extends Handler
   countEdits = (model, done) ->
     statKey = User.statsMapping.edits[model.modelName]
     return done(new Error 'Could not resolve statKey for model') unless statKey?
-    userStream = User.find().stream()
+    userStream = User.find({anonymous: false}).sort('_id').stream()
     streamFinished = false
     usersTotal = 0
     usersFinished = 0
+    numberRunning = 0
     doneWithUser = (err) ->
       log.error err if err?
       ++usersFinished
+      --numberRunning
+      userStream.resume()
       done?() if streamFinished and usersFinished is usersTotal
     userStream.on 'error', (err) -> log.error err
     userStream.on 'close', -> streamFinished = true
     userStream.on 'data',  (user) ->
-      usersTotal += 1
+      ++usersTotal
+      ++numberRunning
+      userStream.pause() if numberRunning > 20
       userObjectID = user.get('_id')
       userStringID = userObjectID.toHexString()
 
@@ -487,6 +568,7 @@ UserHandler = class UserHandler extends Handler
         else
           update = $unset: {}
           update.$unset[statKey] = ''
+        console.log "... updating #{userStringID} patches #{statKey} to #{count}, #{usersTotal} players found so far." if count
         User.findByIdAndUpdate user.get('_id'), update, (err) ->
           log.error err if err?
           doneWithUser()
@@ -512,20 +594,26 @@ UserHandler = class UserHandler extends Handler
       update = {}
       update[method] = {}
       update[method][statName] = count or ''
+      console.log "... updating #{user.get('_id')} patches #{JSON.stringify(query)} #{statName} to #{count}, #{usersTotal} players found so far." if count
       User.findByIdAndUpdate user.get('_id'), update, doneUpdatingUser
 
-    userStream = User.find().stream()
+    userStream = User.find({anonymous: false}).sort('_id').stream()
     streamFinished = false
     usersTotal = 0
     usersFinished = 0
+    numberRunning = 0
     doneWithUser = (err) ->
       log.error err if err?
       ++usersFinished
+      --numberRunning
+      userStream.resume()
       done?() if streamFinished and usersFinished is usersTotal
     userStream.on 'error', (err) -> log.error err
     userStream.on 'close', -> streamFinished = true
     userStream.on 'data',  (user) ->
-      usersTotal += 1
+      ++usersTotal
+      ++numberRunning
+      userStream.pause() if numberRunning > 20
       userObjectID = user.get '_id'
       userStringID = userObjectID.toHexString()
       # Extend query with a patch ownership test
@@ -543,18 +631,23 @@ UserHandler = class UserHandler extends Handler
   countPatchesByUsers = (query, statName, done) ->
     Patch = require '../patches/Patch'
 
-    userStream = User.find().stream()
+    userStream = User.find({anonymous: false}).sort('_id').stream()
     streamFinished = false
     usersTotal = 0
     usersFinished = 0
+    numberRunning = 0
     doneWithUser = (err) ->
       log.error err if err?
       ++usersFinished
+      --numberRunning
+      userStream.resume()
       done?() if streamFinished and usersFinished is usersTotal
     userStream.on 'error', (err) -> log.error err
     userStream.on 'close', -> streamFinished = true
     userStream.on 'data',  (user) ->
-      usersTotal += 1
+      ++usersTotal
+      ++numberRunning
+      userStream.pause() if numberRunning > 20
       userObjectID = user.get '_id'
       userStringID = userObjectID.toHexString()
       # Extend query with a patch ownership test
@@ -565,28 +658,37 @@ UserHandler = class UserHandler extends Handler
         update = {}
         update[method] = {}
         update[method][statName] = count or ''
+        console.log "... updating #{userStringID} patches #{query} to #{count}, #{usersTotal} players found so far." if count
         User.findByIdAndUpdate user.get('_id'), update, doneWithUser
 
   statRecalculators:
     gamesCompleted: (done) ->
       LevelSession = require '../levels/sessions/LevelSession'
 
-      userStream = User.find().stream()
+      userStream = User.find({anonymous: false}).sort('_id').stream()
       streamFinished = false
       usersTotal = 0
       usersFinished = 0
+      numberRunning = 0
       doneWithUser = (err) ->
         log.error err if err?
         ++usersFinished
-        done?() if streamFinished and usersFinished is usersTotal
+        --numberRunning
+        userStream.resume()
+        if streamFinished and usersFinished is usersTotal
+          console.log "----------- Finished recalculating statistics for gamesCompleted for #{usersFinished} players. -----------"
+          done?()
       userStream.on 'error', (err) -> log.error err
       userStream.on 'close', -> streamFinished = true
       userStream.on 'data',  (user) ->
-        usersTotal += 1
+        ++usersTotal
+        ++numberRunning
+        userStream.pause() if numberRunning > 20
         userID = user.get('_id').toHexString()
 
         LevelSession.count {creator: userID, 'state.complete': true}, (err, count) ->
           update = if count then {$set: 'stats.gamesCompleted': count} else {$unset: 'stats.gamesCompleted': ''}
+          console.log "... updating #{userID} gamesCompleted to #{count}, #{usersTotal} players found so far." if Math.random() < 0.001
           User.findByIdAndUpdate user.get('_id'), update, doneWithUser
 
     articleEdits: (done) ->

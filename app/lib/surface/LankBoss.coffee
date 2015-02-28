@@ -7,6 +7,7 @@ FlagLank = require 'lib/surface/FlagLank'
 Lank = require 'lib/surface/Lank'
 Mark = require './Mark'
 Grid = require 'lib/world/Grid'
+utils = require 'core/utils'
 
 module.exports = class LankBoss extends CocoClass
   subscriptions:
@@ -35,7 +36,7 @@ module.exports = class LankBoss extends CocoClass
     @camera = @options.camera
     @webGLStage = @options.webGLStage
     @surfaceTextLayer = @options.surfaceTextLayer
-    @world = options.world
+    @world = @options.world
     @options.thangTypes ?= []
     @lanks = {}
     @lankArray = []  # Mirror @lanks, but faster for when we just need to iterate
@@ -162,6 +163,8 @@ module.exports = class LankBoss extends CocoClass
 
     options = @createLankOptions thang: thang
     options.resolutionFactor = if thangType.get('kind') is 'Floor' then 2 else SPRITE_RESOLUTION_FACTOR
+    if @options.playerNames and /Hero Placeholder/.test thang.id
+      options.playerName = @options.playerNames[thang.team]
     lank = new Lank thangType, options
     @listenTo lank, 'sprite:mouse-up', @onLankMouseUp
     @addLank lank, null, layer
@@ -212,6 +215,24 @@ module.exports = class LankBoss extends CocoClass
     # mainly for handling selecting thangs from session when the thang is not always in existence
     if @willSelectThang and @lanks[@willSelectThang[0]]
       @selectThang @willSelectThang...
+
+    @updateScreenReader()
+
+  updateScreenReader: ->
+    # Testing ASCII map for screen readers
+    return unless me.get('name') is 'zersiax'  #in ['zersiax', 'Nick']
+    ascii = $('#ascii-surface')
+    thangs = (lank.thang for lank in @lankArray)
+    grid = new Grid thangs, @world.width, @world.height, 0, 0, 0, true
+    utils.replaceText ascii, grid.toString true
+    ascii.css 'transform', 'initial'
+    fullWidth = ascii.innerWidth()
+    fullHeight = ascii.innerHeight()
+    availableWidth = ascii.parent().innerWidth()
+    availableHeight = ascii.parent().innerHeight()
+    scale = availableWidth / fullWidth
+    scale = Math.min scale, availableHeight / fullHeight
+    ascii.css 'transform', "scale(#{scale})"
 
   equipNewItems: (thang) ->
     itemsJustEquipped = []

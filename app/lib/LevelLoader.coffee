@@ -32,6 +32,7 @@ module.exports = class LevelLoader extends CocoClass
     @team = options.team
     @headless = options.headless
     @spectateMode = options.spectateMode ? false
+    @observing = options.observing
 
     @worldNecessities = []
     @listenTo @supermodel, 'resource-loaded', @onWorldNecessityLoaded
@@ -88,17 +89,11 @@ module.exports = class LevelLoader extends CocoClass
         @listenToOnce @opponentSession, 'sync', @loadDependenciesForSession
 
   loadDependenciesForSession: (session) ->
+    if me.id isnt session.get 'creator'
+      session.patch = session.save = -> console.error "Not saving session, since we didn't create it."
+    @loadCodeLanguagesForSession session
     if session is @session
-      codeLanguage = session.get('codeLanguage') or me.get('aceConfig')?.language or 'python'
-      modulePath = "vendor/aether-#{codeLanguage}"
-      loading = application.moduleLoader.load(modulePath)
-      if loading
-        @languageModuleResource = @supermodel.addSomethingResource 'language_module'
-        @listenTo application.moduleLoader, 'loaded', (e) ->
-          if e.id is modulePath
-            @languageModuleResource.markLoaded()
-            @stopListening application.moduleLoader
-
+      @addSessionBrowserInfo session
       # hero-ladder games require the correct session team in level:loaded
       team = @team ? @session.get('team')
       Backbone.Mediator.publish 'level:loaded', level: @level, team: team
@@ -133,6 +128,30 @@ module.exports = class LevelLoader extends CocoClass
     @sessionDependenciesRegistered[session.id] = true
     if _.size(@sessionDependenciesRegistered) is 2 and @checkAllWorldNecessitiesRegisteredAndLoaded()
       @onWorldNecessitiesLoaded()
+
+  loadCodeLanguagesForSession: (session) ->
+    codeLanguages = _.uniq _.filter [session.get('codeLanguage') or 'python', session.get('submittedCodeLanguage')]
+    for codeLanguage in codeLanguages
+      do (codeLanguage) =>
+        modulePath = "vendor/aether-#{codeLanguage}"
+        return unless application.moduleLoader?.load modulePath
+        languageModuleResource = @supermodel.addSomethingResource 'language_module'
+        onModuleLoaded = (e) ->
+          return unless e.id is modulePath
+          languageModuleResource.markLoaded()
+          @stopListening application.moduleLoader, 'loaded', onModuleLoaded  # listenToOnce might work here instead, haven't tried
+        @listenTo application.moduleLoader, 'loaded', onModuleLoaded
+
+  addSessionBrowserInfo: (session) ->
+    return unless me.id is session.get 'creator'
+    return unless $.browser?
+    browser = {}
+    browser['desktop'] = $.browser.desktop if $.browser.desktop
+    browser['name'] = $.browser.name if $.browser.name
+    browser['platform'] = $.browser.platform if $.browser.platform
+    browser['version'] = $.browser.version if $.browser.version
+    session.set 'browser', browser
+    session.patch()
 
   consolidateFlagHistory: ->
     state = @session.get('state') ? {}
@@ -374,6 +393,9 @@ module.exports = class LevelLoader extends CocoClass
     @world.levelSessionIDs = if @opponentSessionID then [@sessionID, @opponentSessionID] else [@sessionID]
     @world.submissionCount = @session?.get('state')?.submissionCount ? 0
     @world.flagHistory = @session?.get('state')?.flagHistory ? []
+    @world.difficulty = @session?.get('state')?.difficulty ? 0
+    if @observing
+      @world.difficulty = Math.max 0, @world.difficulty - 1  # Show the difficulty they won, not the next one.
     serializedLevel = @level.serialize(@supermodel, @session, @opponentSession)
     @world.loadFromLevel serializedLevel, false
     console.log 'World has been initialized from level loader.'

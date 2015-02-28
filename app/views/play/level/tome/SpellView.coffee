@@ -9,8 +9,6 @@ SpellDebugView = require './SpellDebugView'
 SpellToolbarView = require './SpellToolbarView'
 LevelComponent = require 'models/LevelComponent'
 UserCodeProblem = require 'models/UserCodeProblem'
-CampaignOptions = require 'lib/CampaignOptions'
-LevelOptions = require 'lib/LevelOptions'
 
 module.exports = class SpellView extends CocoView
   id: 'spell-view'
@@ -71,6 +69,7 @@ module.exports = class SpellView extends CocoView
     @writable = false unless me.team in @spell.permissions.readwrite  # TODO: make this do anything
     @highlightCurrentLine = _.throttle @highlightCurrentLine, 100
     $(window).on 'resize', @onWindowResize
+    @observing = @session.get('creator') isnt me.id
 
   afterRender: ->
     super()
@@ -121,10 +120,15 @@ module.exports = class SpellView extends CocoView
       name: 'run-code'
       bindKey: {win: 'Shift-Enter|Ctrl-Enter', mac: 'Shift-Enter|Command-Enter|Ctrl-Enter'}
       exec: -> Backbone.Mediator.publish 'tome:manual-cast', {}
-    addCommand
-      name: 'run-code-real-time'
-      bindKey: {win: 'Ctrl-Shift-Enter', mac: 'Command-Shift-Enter|Ctrl-Shift-Enter'}
-      exec: -> Backbone.Mediator.publish 'tome:manual-cast', {realTime: true}
+    unless @observing
+      addCommand
+        name: 'run-code-real-time'
+        bindKey: {win: 'Ctrl-Shift-Enter', mac: 'Command-Shift-Enter|Ctrl-Shift-Enter'}
+        exec: =>
+          if @options.level.get('replayable') and (timeUntilResubmit = @session.timeUntilResubmit()) > 0
+            Backbone.Mediator.publish 'tome:manual-cast-denied', timeUntilResubmit: timeUntilResubmit
+          else
+            Backbone.Mediator.publish 'tome:manual-cast', {realTime: true}
     addCommand
       name: 'no-op'
       bindKey: {win: 'Ctrl-S', mac: 'Command-S|Ctrl-S'}
@@ -199,7 +203,7 @@ module.exports = class SpellView extends CocoView
       bindKey: {win: 'Ctrl-Shift-M', mac: 'Command-Shift-M|Ctrl-Shift-M'}
       exec: -> Backbone.Mediator.publish 'tome:toggle-maximize', {}
     addCommand
-      # TODO: Restrict to beginner campaign levels, possibly with a CampaignOptions similar to LevelOptions
+      # TODO: Restrict to beginner campaign levels like we do backspaceThrottle
       name: 'enter-skip-delimiters'
       bindKey: 'Enter|Return'
       exec: =>
@@ -215,37 +219,37 @@ module.exports = class SpellView extends CocoView
     addCommand
       name: 'disable-spaces'
       bindKey: 'Space'
-      exec: => @ace.execCommand 'insertstring', ' ' unless LevelOptions[@options.level.get('slug')]?.disableSpaces
-    addCommand
-      name: 'throttle-backspaces'
-      bindKey: 'Backspace'
       exec: =>
-        # Throttle the backspace speed
-        # Slow to 500ms when whitespace at beginning of line is first encountered
-        # Slow to 100ms for remaining whitespace at beginning of line
-        # Rough testing showed backspaces happen at 150ms when tapping.
-        # Backspace speed varies by system when holding, 30ms on fastest Macbook setting.
-        unless CampaignOptions?.getOption?(@options?.level?.get?('slug'), 'backspaceThrottle')
+        return @ace.execCommand 'insertstring', ' ' unless @options.level.get 'disableSpaces'
+        line = @aceDoc.getLine @ace.getCursorPosition().row
+        return @ace.execCommand 'insertstring', ' ' if @singleLineCommentRegex().test line
+
+    if @options.level.get 'backspaceThrottle'
+      addCommand
+        name: 'throttle-backspaces'
+        bindKey: 'Backspace'
+        exec: =>
+          # Throttle the backspace speed
+          # Slow to 500ms when whitespace at beginning of line is first encountered
+          # Slow to 100ms for remaining whitespace at beginning of line
+          # Rough testing showed backspaces happen at 150ms when tapping.
+          # Backspace speed varies by system when holding, 30ms on fastest Macbook setting.
+          nowDate = Date.now()
+          if @aceSession.selection.isEmpty()
+            cursor = @ace.getCursorPosition()
+            line = @aceDoc.getLine(cursor.row)
+            if /^\s*$/.test line.substring(0, cursor.column)
+              @backspaceThrottleMs ?= 500
+              # console.log "SpellView @backspaceThrottleMs=#{@backspaceThrottleMs}"
+              # console.log 'SpellView lastBackspace diff', nowDate - @lastBackspace if @lastBackspace?
+              if not @lastBackspace? or nowDate - @lastBackspace > @backspaceThrottleMs
+                @backspaceThrottleMs = 100
+                @lastBackspace = nowDate
+                @ace.remove "left"
+              return
+          @backspaceThrottleMs = null
+          @lastBackspace = nowDate
           @ace.remove "left"
-          return
-
-        nowDate = Date.now()
-        if @aceSession.selection.isEmpty()
-          cursor = @ace.getCursorPosition()
-          line = @aceDoc.getLine(cursor.row)
-          if /^\s*$/.test line.substring(0, cursor.column)
-            @backspaceThrottleMs ?= 500
-            # console.log "SpellView @backspaceThrottleMs=#{@backspaceThrottleMs}"
-            # console.log 'SpellView lastBackspace diff', nowDate - @lastBackspace if @lastBackspace?
-            if not @lastBackspace? or nowDate - @lastBackspace > @backspaceThrottleMs
-              @backspaceThrottleMs = 100
-              @lastBackspace = nowDate
-              @ace.remove "left"
-            return
-        @backspaceThrottleMs = null
-        @lastBackspace = nowDate
-        @ace.remove "left"
-
 
 
   fillACE: ->
@@ -255,7 +259,7 @@ module.exports = class SpellView extends CocoView
 
   lockDefaultCode: (force=false) ->
     # TODO: Lock default indent for an empty line?
-    return unless LevelOptions[@options.level.get('slug')]?.lockDefaultCode or CampaignOptions?.getOption?(@options?.level?.get?('slug'), 'lockDefaultCode')
+    return unless @options.level.get('lockDefaultCode')
     return unless @spell.source is @spell.originalSource or force
 
     console.info 'Locking down default code.'
@@ -308,11 +312,12 @@ module.exports = class SpellView extends CocoView
 
     # Create locked default code text ranges
     @readOnlyRanges = []
-    if @spell.language in ['python', 'coffeescript']  
+    if @spell.language in ['python', 'coffeescript']
       # Lock contiguous section of default code
       # Only works for languages without closing delimeters on blocks currently
       lines = @aceDoc.getAllLines()
-      lastRow = row for line, row in lines when not /^\s*$/.test(line)
+      for line, row in lines when not /^\s*$/.test(line)
+        lastRow = row
       if lastRow?
         @readOnlyRanges.push new Range 0, 0, lastRow, lines[lastRow].length - 1
 
@@ -369,7 +374,7 @@ module.exports = class SpellView extends CocoView
     # TODO: Turn on more autocompletion based on level sophistication
     # TODO: E.g. using the language default snippets yields a bunch of crazy non-beginner suggestions
     # TODO: Options logic shouldn't exist both here and in updateAutocomplete()
-    popupFontSizePx = CampaignOptions.getOption(@options.level.get('slug'), 'autocompleteFontSizePx') ? 16
+    popupFontSizePx = @options.level.get('autocompleteFontSizePx') ? 16
     @zatanna = new Zatanna @ace,
       basic: false
       liveCompletion: false
@@ -406,7 +411,7 @@ module.exports = class SpellView extends CocoView
           return (owner is 'this' or owner is 'more') and (not doc.owner? or doc.owner is 'this')
         if doc?.snippets?[e.language]
           content = doc.snippets[e.language].code
-          if /loop/.test(content) and LevelOptions[@options.level.get('slug')]?.moveRightLoopSnippet
+          if /loop/.test(content) and @options.level.get 'moveRightLoopSnippet'
             # Replace default loop snippet with an embedded moveRight()
             content = switch e.language
               when 'python' then 'loop:\n    self.moveRight()\n    ${1:}'
@@ -417,7 +422,7 @@ module.exports = class SpellView extends CocoView
             meta: 'press enter'
             name: doc.name
             tabTrigger: doc.snippets[e.language].tab
-          if doc.name is 'findNearestEnemy'
+          if doc.name is 'findNearestEnemy' or doc.name is 'findNearest'
             # Remember if we have findNearestEnemy so attack snippet can be updated
             haveFindNearestEnemy = true
           if doc.name is 'attack'
@@ -434,10 +439,11 @@ module.exports = class SpellView extends CocoView
         attackEntry.content = attackEntry.content.replace '${1:enemy}', '"${1:Enemy Name}"'
       snippetEntries.push attackEntry
 
-    # window.zatannaInstance = @zatanna
+    # window.zatannaInstance = @zatanna  # For debugging. Make sure to not leave active when committing.
     # window.snippetEntries = snippetEntries
     lang = SpellView.editModes[e.language].substr 'ace/mode/'.length
     @zatanna.addSnippets snippetEntries, lang
+    @editorLang = lang
 
   onMultiplayerChanged: ->
     if @session.get('multiplayer')
@@ -613,11 +619,11 @@ module.exports = class SpellView extends CocoView
       _.throttle @updateLines, 500
       _.throttle @hideProblemAlert, 500
     ]
-    onSignificantChange.push _.debounce @checkRequiredCode, 750 if LevelOptions[@options.level.get('slug')]?.requiredCode
-    onSignificantChange.push _.debounce @checkSuspectCode, 750 if LevelOptions[@options.level.get('slug')]?.suspectCode
+    onSignificantChange.push _.debounce @checkRequiredCode, 750 if @options.level.get 'requiredCode'
+    onSignificantChange.push _.debounce @checkSuspectCode, 750 if @options.level.get 'suspectCode'
     @onCodeChangeMetaHandler = =>
       return if @eventsSuppressed
-      Backbone.Mediator.publish 'audio-player:play-sound', trigger: 'code-change', volume: 0.5
+      #@playSound 'code-change', volume: 0.5  # Currently not using this sound.
       if @spellThang
         @spell.hasChangedSignificantly @getSource(), @spellThang.aether.raw, (hasChanged) =>
           if not @spellThang or hasChanged
@@ -730,6 +736,7 @@ module.exports = class SpellView extends CocoView
     hashValue = aether.raw + aetherProblem.message
     return if hashValue of @savedProblems
     @savedProblems[hashValue] = true
+
     # Save new problem
     @userCodeProblem = new UserCodeProblem()
     @userCodeProblem.set 'code', aether.raw
@@ -776,18 +783,17 @@ module.exports = class SpellView extends CocoView
         @recompile()
 
   singleLineCommentRegex: ->
-    return @_singleLineCommentRegex if @_singleLineCommentRegex
-    commentStarts =
-      javascript: '//'
-      python: '#'
-      coffeescript: '#'
-      clojure: ';'
-      lua: '--'
-      io: '//'
+    if @_singleLineCommentRegex
+      @_singleLineCommentRegex.lastIndex = 0
+      return @_singleLineCommentRegex
     commentStart = commentStarts[@spell.language] or '//'
-    @_singleLineCommentRegexp ?= new RegExp "[ \t]*#{commentStart}[^\"'\n]*", 'g'
-    @_singleLineCommentRegexp
-
+    @_singleLineCommentRegex = new RegExp "[ \t]*#{commentStart}[^\"'\n]*", 'g'
+    @_singleLineCommentRegex
+  
+  commentOutMyCode: ->
+    prefix = if @spell.language is 'javascript' then 'return;  ' else 'return  '
+    comment = prefix + commentStarts[@spell.language]
+    
   preload: ->
     # Send this code over to the God for preloading, but don't change the cast state.
     oldSource = @spell.source
@@ -913,7 +919,7 @@ module.exports = class SpellView extends CocoView
         @aceSession.removeGutterDecoration row, 'executed'
         @decoratedGutter[row] = ''
     lastExecuted = _.last executed
-    showToolbarView = executed.length and @spellThang.castAether.metrics.statementsExecuted > 3 and not LevelOptions[@options.level.get('slug')]?.hidesCodeToolbar  # Hide for a while
+    showToolbarView = executed.length and @spellThang.castAether.metrics.statementsExecuted > 3 and not @options.level.get 'hidesCodeToolbar'  # Hide for a while
     showToolbarView = false  # TODO: fix toolbar styling in new design to have some space for it
 
     if showToolbarView
@@ -1048,7 +1054,7 @@ module.exports = class SpellView extends CocoView
   checkRequiredCode: =>
     return if @destroyed
     source = @getSource().replace @singleLineCommentRegex(), ''
-    requiredCodeFragments = LevelOptions[@options.level.get('slug')].requiredCode
+    requiredCodeFragments = @options.level.get 'requiredCode'
     for requiredCodeFragment in requiredCodeFragments
       # Could make this obey regular expressions like suspectCode if needed
       if source.indexOf(requiredCodeFragment) is -1
@@ -1060,10 +1066,11 @@ module.exports = class SpellView extends CocoView
   checkSuspectCode: =>
     return if @destroyed
     source = @getSource().replace @singleLineCommentRegex(), ''
-    suspectCodeFragments = LevelOptions[@options.level.get('slug')].suspectCode
+    suspectCodeFragments = @options.level.get 'suspectCode'
     detectedSuspectCodeFragmentNames = []
     for suspectCodeFragment in suspectCodeFragments
-      if suspectCodeFragment.pattern.test source
+      pattern = new RegExp suspectCodeFragment.pattern, 'm'
+      if pattern.test source
         @warnedCodeFragments ?= {}
         unless @warnedCodeFragments[suspectCodeFragment.name]
           Backbone.Mediator.publish 'tome:suspect-code-fragment-added', codeFragment: suspectCodeFragment.name, codeLanguage: @spell.language
@@ -1084,5 +1091,15 @@ module.exports = class SpellView extends CocoView
     @aceSession?.selection.off 'changeCursor', @onCursorActivity
     @destroyAceEditor(@ace)
     @debugView?.destroy()
+    @toolbarView?.destroy()
+    @zatanna.addSnippets [], @editorLang if @editorLang?
     $(window).off 'resize', @onWindowResize
     super()
+    
+commentStarts =
+  javascript: '//'
+  python: '#'
+  coffeescript: '#'
+  clojure: ';'
+  lua: '--'
+  io: '//'

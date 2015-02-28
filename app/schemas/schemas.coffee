@@ -143,7 +143,7 @@ me.getLanguageCodeArray = ->
   return Language.languageCodes
 
 me.getLanguagesObject = -> return Language
-  
+
 me.extendTranslationCoverageProperties = (schema) ->
   schema.properties = {} unless schema.properties?
   schema.properties.i18nCoverage = { title: 'i18n Coverage', type: 'array', items: { type: 'string' }}
@@ -207,7 +207,7 @@ me.activity = me.object {description: 'Stats on an activity'},
   last: me.date()
   count: {type: 'integer', minimum: 0}
 
-me.terrainString = me.shortString {enum: ['Grass', 'Dungeon', 'Indoor'], title: 'Terrain', description: 'Which terrain type this is.'}
+me.terrainString = me.shortString {enum: ['Grass', 'Dungeon', 'Indoor', 'Desert', 'Mountain'], title: 'Terrain', description: 'Which terrain type this is.'}
 
 me.HeroConfigSchema = me.object {description: 'Which hero the player is using, equipped with what inventory.'},
   inventory:
@@ -227,4 +227,8 @@ me.RewardSchema = (descriptionFragment='earned by achievements') ->
       me.stringID(links: [{rel: 'db', href: '/db/thang.type/{($)}/version'}], title: 'Item ThangType', description: 'A reference to the earned item ThangType.', format: 'thang-type')
     levels: me.array {uniqueItems: true, description: "Levels #{descriptionFragment}."},
       me.stringID(links: [{rel: 'db', href: '/db/level/{($)}/version'}], title: 'Level', description: 'A reference to the earned Level.', format: 'latest-version-original-reference')
-    gems: me.int {description: "Gems #{descriptionFragment}."}
+    gems: me.float {description: "Gems #{descriptionFragment}."}
+
+me.task = me.object {title: 'Task', description: 'A task to be completed', format: 'task', default: {name: 'TODO', complete: false}},
+  name: {title: 'Name', description: 'What must be done?', type: 'string'}
+  complete: {title: 'Complete', description: 'Whether this task is done.', type: 'boolean', format: 'checkbox'}

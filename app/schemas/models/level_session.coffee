@@ -29,6 +29,8 @@ LevelSessionSchema = c.object
 
 _.extend LevelSessionSchema.properties,
   # denormalization
+  browser:
+    type: 'object'
   creatorName:
     type: 'string'
   levelName:
@@ -114,6 +116,12 @@ _.extend LevelSessionSchema.properties,
       description: 'How many times the session has been submitted for real-time playback (can affect the random seed).'
       type: 'integer'
       minimum: 0
+    difficulty:
+      description: 'The highest difficulty level beaten, for use in increasing-difficulty replayable levels.'
+      type: 'integer'
+      minimum: 0
+    lastUnsuccessfulSubmissionTime: c.date
+      description: 'The last time that real-time submission was started without resulting in a win.'
     flagHistory:
       description: 'The history of flag events during the last real-time playback submission.'
       type: 'array'
@@ -127,6 +135,12 @@ _.extend LevelSessionSchema.properties,
           x: {type: 'number'}
           y: {type: 'number'}
         source: {type: 'string', enum: ['click']}  # Do not store 'code' flag events in the session.
+    topScores: c.array {},
+      c.object {},
+        type: c.shortString('enum': ['time', 'damage-taken', 'damage-dealt', 'gold-collected', 'difficulty'])
+        date: c.date
+          description: 'When the submission achieving this score happened.'
+        score: {type: 'number'}  # Store 'time' and 'damage-taken' as negative numbers so the index works.
 
   code:
     type: 'object'
@@ -271,6 +285,8 @@ _.extend LevelSessionSchema.properties,
               codeLanguage:
                 type: ['string', 'null']  # 'null' in case an opponent session got corrupted, don't care much here
                 description: 'What submittedCodeLanguage the opponent used during the match'
+        simulator: {type: 'object', description: 'Holds info on who simulated the match, and with what tools.'}
+        randomSeed: {description: 'Stores the random seed that was used during this match.'}
 
 c.extendBasicProperties LevelSessionSchema, 'level.session'
 c.extendPermissionsProperties LevelSessionSchema, 'level.session'

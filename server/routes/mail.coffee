@@ -554,7 +554,7 @@ handleLadderUpdate = (req, res) ->
       endTime = startTime + 15 * 60 * 1000  # Debugging: make sure there's something to send
     findParameters = {submitted: true, submitDate: {$gt: new Date(startTime), $lte: new Date(endTime)}}
     # TODO: think about putting screenshots in the email
-    selectString = 'creator team levelName levelID totalScore matches submitted submitDate scoreHistory level.original'
+    selectString = 'creator team levelName levelID totalScore matches submitted submitDate scoreHistory level.original unsubscribed'
     query = LevelSession.find(findParameters)
       .select(selectString)
       .lean()
@@ -575,8 +575,8 @@ sendLadderUpdateEmail = (session, now, daysAgo) ->
     unless user.get('email') and allowNotes and not session.unsubscribed
       #log.info "Not sending email to #{user.get('email')} #{user.get('name')} because they only want emails about #{user.get('emailSubscriptions')}, #{user.get('emails')} - session unsubscribed: #{session.unsubscribed}"
       return
-    unless session.levelName
-      #log.info "Not sending email to #{user.get('email')} #{user.get('name')} because the session had no levelName in it."
+    unless session.levelName and session.team
+      #log.info "Not sending email to #{user.get('email')} #{user.get('name')} because the session had levelName #{session.levelName} or team #{session.team} in it."
       return
     name = if user.get('firstName') and user.get('lastName') then "#{user.get('firstName')}" else user.get('name')
     name = 'Wizard' if not name or name is 'Anoner'

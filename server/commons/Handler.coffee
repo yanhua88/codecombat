@@ -23,7 +23,7 @@ module.exports = class Handler
   allowedMethods: ['GET', 'POST', 'PUT', 'PATCH']
 
   constructor: ->
-    # TODO The second 'or' is for backward compatibility only is for backward compatibility only
+    # TODO The second 'or' is for backward compatibility only
     @privateProperties = @modelClass?.privateProperties or @privateProperties or []
     @editableProperties = @modelClass?.editableProperties or @editableProperties or []
     @postEditableProperties = @modelClass?.postEditableProperties or @postEditableProperties or []
@@ -34,7 +34,7 @@ module.exports = class Handler
   hasAccessToDocument: (req, document, method=null) ->
     return true if req.user?.isAdmin()
 
-    if @modelClass.schema.uses_coco_translation_coverage and (method or req.method).toLowerCase() is 'put'
+    if @modelClass.schema.uses_coco_translation_coverage and (method or req.method).toLowerCase() in ['post', 'put']
       return true if @isJustFillingTranslations(req, document)
 
     if @modelClass.schema.uses_coco_permissions
@@ -53,7 +53,7 @@ module.exports = class Handler
       return false unless delta.o.length is 1
       index = delta.deltaPath.indexOf('i18n')
       return false if index is -1
-      return false if delta.deltaPath[index+1] is 'en-US'
+      return false if delta.deltaPath[index+1] in ['en', 'en-US', 'en-GB']  # English speakers are most likely just spamming, so always treat those as patches, not saves.
       return true
 
   formatEntity: (req, document) -> document?.toObject()
@@ -88,15 +88,15 @@ module.exports = class Handler
   sendError: (res, code, message) ->
     errors.custom(res, code, message)
 
-  sendSuccess: (res, message) ->
-    res.send(message)
+  sendSuccess: (res, message='{}') ->
+    res.send 200, message
     res.end()
 
-  sendCreated: (res, message) ->
+  sendCreated: (res, message='{}') ->
     res.send 201, message
     res.end()
 
-  sendAccepted: (res, message) ->
+  sendAccepted: (res, message='{}') ->
     res.send 202, message
     res.end()
 
@@ -106,7 +106,7 @@ module.exports = class Handler
 
   # generic handlers
   get: (req, res) ->
-    @sendForbiddenError(res) if not @hasAccess(req)
+    return @sendForbiddenError(res) if not @hasAccess(req)
 
     specialParameters = ['term', 'project', 'conditions']
 
@@ -164,19 +164,17 @@ module.exports = class Handler
             res.send matchedObjects
             res.end()
         if term
-          filter.project = projection
-          @modelClass.textSearch term, filter, callback
+          filter.filter.$text = $search: term
+        args = [filter.filter]
+        args.push projection if projection
+        q = @modelClass.find(args...)
+        if skip? and skip < 1000000
+          q.skip(skip)
+        if limit? and limit < FETCH_LIMIT
+          q.limit(limit)
         else
-          args = [filter.filter]
-          args.push projection if projection
-          q = @modelClass.find(args...)
-          if skip? and skip < 1000000
-            q.skip(skip)
-          if limit? and limit < FETCH_LIMIT
-            q.limit(limit)
-          else
-            q.limit(FETCH_LIMIT)
-          q.exec callback
+          q.limit(FETCH_LIMIT)
+        q.exec callback
     # if it's not a text search but the user is an admin, let him try stuff anyway
     else if req.user?.isAdmin()
       # admins can send any sort of query down the wire
@@ -187,14 +185,17 @@ module.exports = class Handler
 
       # Conditions are chained query functions, for example: query.find().limit(20).sort('-dateCreated')
       conditions = JSON.parse(req.query.conditions || '[]')
+      hasLimit = false
       try
         for condition in conditions
           name = condition[0]
           f = query[name]
           args = condition[1..]
           query = query[name](args...)
+          hasLimit ||= f is 'limit'
       catch e
         return @sendError(res, 422, 'Badly formed conditions.')
+      query.limit(2000) unless hasLimit
 
       query.exec (err, documents) =>
         return @sendDatabaseError(res, err) if err
@@ -232,9 +233,9 @@ module.exports = class Handler
     ids = ids.split(',') if _.isString ids
     ids = _.uniq ids
 
-    # HACK: levels loading thang types need the components returned as well
+    # Hack: levels loading thang types need the components returned as well.
     # Need a way to specify a projection for a query.
-    project = {name:1, original:1, kind:1, components: 1}
+    project = {name: 1, original: 1, kind: 1, components: 1}
     sort = {'version.major':-1, 'version.minor':-1}
 
     makeFunc = (id) =>
@@ -255,7 +256,12 @@ module.exports = class Handler
       res.end()
 
   getPatchesFor: (req, res, id) ->
-    query = { 'target.original': mongoose.Types.ObjectId(id), status: req.query.status or 'pending' }
+    query =
+      $or: [
+        {'target.original': id+''}
+        {'target.original': mongoose.Types.ObjectId(id)}
+      ]
+      status: req.query.status or 'pending'
     Patch.find(query).sort('-created').exec (err, patches) =>
       return @sendDatabaseError(res, err) if err
       patches = (patch.toObject() for patch in patches)
@@ -300,7 +306,7 @@ module.exports = class Handler
   getLatestVersion: (req, res, original, version) ->
     # can get latest overall version, latest of a major version, or a specific version
     return @sendBadInputError(res, 'Invalid MongoDB id: '+original) if not Handler.isID(original)
-      
+
     query = { 'original': mongoose.Types.ObjectId(original) }
     if version?
       version = version.split('.')
@@ -314,10 +320,17 @@ module.exports = class Handler
       projection = {}
       fields = if req.query.project is 'true' then _.keys(PROJECT) else req.query.project.split(',')
       projection[field] = 1 for field in fields
+      # Make sure that permissions and version are fetched, but not sent back if they didn't ask for them.
+      extraProjectionProps = []
+      extraProjectionProps.push 'permissions' unless projection.permissions
+      extraProjectionProps.push 'version' unless projection.version
+      projection.permissions = 1
+      projection.version = 1
       args.push projection
     @modelClass.findOne(args...).sort(sort).exec (err, doc) =>
       return @sendNotFoundError(res) unless doc?
       return @sendForbiddenError(res) unless @hasAccessToDocument(req, doc)
+      doc = _.omit doc, extraProjectionProps if extraProjectionProps?
       res.send(doc)
       res.end()
 
@@ -328,7 +341,7 @@ module.exports = class Handler
   put: (req, res, id) ->
     # Client expects PATCH behavior for PUTs
     # Real PATCHs return incorrect HTTP responses in some environments (e.g. Browserstack, schools)
-    return @postNewVersion(req, res) if @modelClass.schema.uses_coco_versions
+    return @sendForbiddenError(res) if @modelClass.schema.uses_coco_versions and not req.user.isAdmin()  # Campaign editor just saves over things.
     return @sendBadInputError(res, 'No input.') if _.isEmpty(req.body)
     return @sendForbiddenError(res) unless @hasAccess(req)
     @getDocumentForIdOrSlug req.body._id or id, (err, document) =>
@@ -343,6 +356,7 @@ module.exports = class Handler
           return @sendBadInputError(res, err.errors) if err?.valid is false
           return @sendDatabaseError(res, err) if err
           @sendSuccess(res, @formatEntity(req, document))
+          @onPutSuccess(req, document)
 
   post: (req, res) ->
     if @modelClass.schema.uses_coco_versions
@@ -362,6 +376,7 @@ module.exports = class Handler
       @onPostSuccess(req, document)
 
   onPostSuccess: (req, doc) ->
+  onPutSuccess: (req, doc) ->
 
   ###
   TODO: think about pulling some common stuff out of postFirstVersion/postNewVersion
@@ -432,7 +447,8 @@ module.exports = class Handler
     docLink = "http://codecombat.com#{editPath}"
     @sendChangedHipChatMessage creator: editor, target: changedDocument, docLink: docLink
     watchers = changedDocument.get('watchers') or []
-    watchers = (w for w in watchers when not w.equals(editor.get('_id')))
+    # Don't send these emails to the person who submitted the patch, or to Nick, George, or Scott.
+    watchers = (w for w in watchers when not w.equals(editor.get('_id')) and not (w + '' in ['512ef4805a67a8c507000001', '5162fab9c92b4c751e000274', '51538fdb812dd9af02000001']))
     return unless watchers.length
     User.find({_id:{$in:watchers}}).select({email:1, name:1}).exec (err, watchers) =>
       for watcher in watchers
@@ -452,8 +468,9 @@ module.exports = class Handler
     sendwithus.api.send context, (err, result) ->
 
   sendChangedHipChatMessage: (options) ->
-    message = "#{options.creator.get('name')} saved a change to <a href=\"#{options.docLink}\">#{options.target.get('name')}</a>: #{options.target.get('commitMessage')}"
-    hipchat.sendHipChatMessage message
+    message = "#{options.creator.get('name')} saved a change to <a href=\"#{options.docLink}\">#{options.target.get('name')}</a>: #{options.target.get('commitMessage') or '(no commit message)'}"
+    rooms = if /Diplomat submission/.test(message) then ['main'] else ['main', 'artisans']
+    hipchat.sendHipChatMessage message, rooms
 
   makeNewInstance: (req) ->
     model = new @modelClass({})
@@ -461,9 +478,7 @@ module.exports = class Handler
       watchers = [req.user.get('_id')]
       if req.user.isAdmin()  # https://github.com/codecombat/codecombat/issues/1105
         nick = mongoose.Types.ObjectId('512ef4805a67a8c507000001')
-        scott = mongoose.Types.ObjectId('5162fab9c92b4c751e000274')
         watchers.push nick unless _.find watchers, (id) -> id.equals nick
-        watchers.push scott unless _.find watchers, (id) -> id.equals scott
       model.set 'watchers', watchers
     model
 

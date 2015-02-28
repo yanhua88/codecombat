@@ -35,7 +35,7 @@ PaymentHandler = class PaymentHandler extends Handler
   editableProperties: []
   postEditableProperties: ['purchased']
   jsonSchema: require '../../app/schemas/models/payment.schema'
-  
+
   get: (req, res) ->
     return res.send([]) unless req.user
     q = Payment.find({recipient:req.user._id})
@@ -43,7 +43,7 @@ PaymentHandler = class PaymentHandler extends Handler
       return @sendDatabaseError(res, err) if err
       res.send(payments)
     )
-    
+
   logPaymentError: (req, msg) ->
     console.warn "Payment Error: #{req.user.get('slug')} (#{req.user._id}): '#{msg}'"
 
@@ -54,10 +54,13 @@ PaymentHandler = class PaymentHandler extends Handler
     payment.set 'created', new Date().toISOString()
     payment
 
-  post: (req, res) ->
+  post: (req, res, pathName) ->
+    if pathName is 'check-stripe-charges'
+      return @checkStripeCharges(req, res)
+
     if (not req.user) or req.user.isAnonymous()
       return @sendForbiddenError(res)
-    
+
     appleReceipt = req.body.apple?.rawReceipt
     appleTransactionID = req.body.apple?.transactionID
     appleLocalPrice = req.body.apple?.localPrice
@@ -143,7 +146,7 @@ PaymentHandler = class PaymentHandler extends Handler
         if validation.valid is false
           @logPaymentError(req, 'Invalid apple payment object.')
           return @sendBadInputError(res, validation.errors)
-          
+
         payment.save((err) =>
           if err
             @logPaymentError(req, 'Apple payment save error.'+err)
@@ -167,24 +170,24 @@ PaymentHandler = class PaymentHandler extends Handler
     # First, make sure we save the payment info as a Customer object, if we haven't already.
     if token
       customerID = req.user.get('stripe')?.customerID
-      
+
       if customerID
         # old customer, new token. Save it.
         stripe.customers.update customerID, { card: token }, (err, customer) =>
           @beginStripePayment(req, res, timestamp, productID)
-          
+
       else
         newCustomer = {
           card: token
           email: req.user.get('email')
           metadata: { id: req.user._id + '', slug: req.user.get('slug') }
         }
-        
+
         stripe.customers.create newCustomer, (err, customer) =>
           if err
             @logPaymentError(req, 'Stripe customer creation error. '+err)
             return @sendDatabaseError(res, err)
-          
+
           stripeInfo = _.cloneDeep(req.user.get('stripe') ? {})
           stripeInfo.customerID = customer.id
           req.user.set('stripe', stripeInfo)
@@ -220,16 +223,16 @@ PaymentHandler = class PaymentHandler extends Handler
       ((err, results) =>
         if err
           @logPaymentError(req, 'Stripe async load db error. '+err)
-          return @sendDatabaseError(res, err) 
+          return @sendDatabaseError(res, err)
         [payment, charge] = results
 
         if not (payment or charge)
           # Proceed normally from the beginning
-          @chargeStripe(req, res, payment, product)
+          @chargeStripe(req, res, product)
 
         else if charge and not payment
           # Initialized Payment. Start from charging.
-          @recordStripeCharge(req, res, payment, product, charge)
+          @recordStripeCharge(req, res, charge)
 
         else
           # Charged Stripe and recorded it. Recalculate gems to make sure credited the purchase.
@@ -244,7 +247,7 @@ PaymentHandler = class PaymentHandler extends Handler
     )
 
 
-  chargeStripe: (req, res, payment, product) ->
+  chargeStripe: (req, res, product) ->
     stripe.charges.create({
       amount: product.amount
       currency: 'usd'
@@ -258,7 +261,7 @@ PaymentHandler = class PaymentHandler extends Handler
       receipt_email: req.user.get('email')
     }).then(
       # success case
-      ((charge) => @recordStripeCharge(req, res, payment, product, charge)),
+      ((charge) => @recordStripeCharge(req, res, charge)),
 
       # error case
       ((err) =>
@@ -270,16 +273,16 @@ PaymentHandler = class PaymentHandler extends Handler
     )
 
 
-  recordStripeCharge: (req, res, payment, product, charge) ->
+  recordStripeCharge: (req, res, charge) ->
     return @sendError(res, 500, 'Fake db error for testing.') if req.body.breakAfterCharging
     payment = @makeNewInstance(req)
     payment.set 'service', 'stripe'
-    payment.set 'productID', req.body.productID
-    payment.set 'amount', product.amount
-    payment.set 'gems', product.gems
+    payment.set 'productID', charge.metadata.productID
+    payment.set 'amount', parseInt(charge.amount)
+    payment.set 'gems', parseInt(charge.metadata.gems)
     payment.set 'stripe', {
-      customerID: req.user.get('stripe')?.customerID
-      timestamp: parseInt(req.body.stripe.timestamp)
+      customerID: charge.customer
+      timestamp: parseInt(charge.metadata.timestamp)
       chargeID: charge.id
     }
 
@@ -291,7 +294,7 @@ PaymentHandler = class PaymentHandler extends Handler
 
       # Credit gems
       return @sendDatabaseError(res, err) if err
-      @incrementGemsFor(req.user, product.gems, (err) =>
+      @incrementGemsFor(req.user, parseInt(charge.metadata.gems), (err) =>
         if err
           @logPaymentError(req, 'Stripe incr db error. '+err)
           return @sendDatabaseError(res, err)
@@ -299,6 +302,41 @@ PaymentHandler = class PaymentHandler extends Handler
       )
     )
 
+
+  #- Confirm all Stripe charges are recorded on our server
+
+  checkStripeCharges: (req, res) ->
+    return @sendSuccess(res) unless customerID = req.user.get('stripe')?.customerID
+    async.parallel([
+        ((callback) ->
+          criteria = { recipient: req.user._id, 'stripe.invoiceID': { $exists: false }, 'ios.transactionID': { $exists: false } }
+          Payment.find(criteria).limit(100).sort({_id:-1}).exec((err, payments) =>
+            callback(err, payments)
+          )
+        ),
+        ((callback) ->
+          stripe.charges.list({customer: customerID, limit: 100}, (err, recentCharges) =>
+            return callback(err) if err
+            callback(null, recentCharges.data)
+          )
+        )
+      ],
+
+      ((err, results) =>
+        if err
+          @logPaymentError(req, 'Stripe async load db error. '+err)
+          return @sendDatabaseError(res, err)
+
+        [payments, charges] = results
+        recordedChargeIDs = (p.get('stripe').chargeID for p in payments)
+        for charge in charges
+          continue if charge.invoice # filter out subscription charges
+          if charge.id not in recordedChargeIDs
+            return @recordStripeCharge(req, res, charge)
+
+        @sendSuccess(res)
+      )
+    )
 
   #- Incrementing/recalculating gems
 
@@ -313,22 +351,26 @@ PaymentHandler = class PaymentHandler extends Handler
     else
       user.update({$inc: {'purchased.gems': gems}}, {}, (err) -> done(err))
 
-  recalculateGemsFor: (user, done) ->
+  recalculateGemsFor: (user, done, saveIfUnchanged=true) ->
 
     Payment.find({recipient: user._id}).select('gems').exec((err, payments) ->
       gems = _.reduce payments, ((sum, p) -> sum + p.get('gems')), 0
       purchased = _.clone(user.get('purchased'))
       purchased ?= {}
+      if (purchased.gems or 0) isnt gems
+        log.debug "Updating #{user.get('_id')} gems from #{purchased.gems} to #{gems} from #{payments.length} payments; #{user.get('email')} #{user.get('name')}"
+      else unless saveIfUnchanged
+        log.debug "#{user.get('_id')} already had #{purchased.gems} #{gems} from #{payments.length} payments; #{user.get('email')} #{user.get('name')}"
+        return done()
       purchased.gems = gems
       user.set('purchased', purchased)
       user.save((err) -> done(err))
-
     )
 
   sendPaymentHipChatMessage: (options) ->
     try
       message = "#{options.user?.get('name')} bought #{options.payment?.get('amount')} via #{options.payment?.get('service')}."
-      hipchat.sendHipChatMessage message
+      hipchat.sendHipChatMessage message, ['tower']
     catch e
       log.error "Couldn't send HipChat message on payment because of error: #{e}"
 

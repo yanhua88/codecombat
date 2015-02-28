@@ -7,7 +7,6 @@ RealTimeModel = require 'models/RealTimeModel'
 RealTimeCollection = require 'collections/RealTimeCollection'
 LevelSetupManager = require 'lib/LevelSetupManager'
 GameMenuModal = require 'views/play/menu/GameMenuModal'
-CampaignOptions = require 'lib/CampaignOptions'
 
 module.exports = class ControlBarView extends CocoView
   id: 'control-bar-view'
@@ -26,6 +25,7 @@ module.exports = class ControlBarView extends CocoView
     'click .levels-link-area': 'onClickHome'
     'click .home a': 'onClickHome'
     'click .multiplayer-area': 'onClickMultiplayer'
+    'click #control-bar-sign-up-button': 'onClickSignupButton'
 
   constructor: (options) ->
     @worldName = options.worldName
@@ -33,9 +33,13 @@ module.exports = class ControlBarView extends CocoView
     @level = options.level
     @levelID = @level.get('slug')
     @spectateGame = options.spectateGame ? false
+    @observing = options.session.get('creator') isnt me.id
     super options
-    if @isMultiplayerLevel = @level.get('type') in ['hero-ladder']
+    if @level.get('type') in ['hero-ladder'] and me.isAdmin()
+      @isMultiplayerLevel = true
       @multiplayerStatusManager = new MultiplayerStatusManager @levelID, @onMultiplayerStateChanged
+    if @level.get 'replayable'
+      @listenTo @session, 'change-difficulty', @onSessionDifficultyChanged
 
   setBus: (@bus) ->
 
@@ -58,7 +62,14 @@ module.exports = class ControlBarView extends CocoView
     c.ladderGame = @level.get('type') in ['ladder', 'hero-ladder']
     if c.isMultiplayerLevel = @isMultiplayerLevel
       c.multiplayerStatus = @multiplayerStatusManager?.status
+    if @level.get 'replayable'
+      c.levelDifficulty = @session.get('state')?.difficulty ? 0
+      if @observing
+        c.levelDifficulty = Math.max 0, c.levelDifficulty - 1  # Show the difficulty they won, not the next one.
+      c.difficultyTitle = "#{$.i18n.t 'play.level_difficulty'}#{c.levelDifficulty}"
+      @lastDifficulty = c.levelDifficulty
     c.spectateGame = @spectateGame
+    c.observing = @observing
     @homeViewArgs = [{supermodel: if @hasReceivedMemoryWarning then null else @supermodel}]
     if @level.get('type', true) in ['ladder', 'ladder-tutorial', 'hero-ladder']
       levelID = @level.get('slug').replace /\-tutorial$/, ''
@@ -67,11 +78,10 @@ module.exports = class ControlBarView extends CocoView
       @homeViewArgs.push levelID
     else if @level.get('type', true) in ['hero', 'hero-coop']
       @homeLink = c.homeLink = '/play'
-      @homeViewClass = 'views/play/WorldMapView'
-      campaign = CampaignOptions.getCampaignForSlug @level.get 'slug'
-      if campaign isnt 'dungeon'
-        @homeLink += '/' + campaign
-        @homeViewArgs.push campaign
+      @homeViewClass = 'views/play/CampaignView'
+      campaign = @level.get 'campaign'
+      @homeLink += '/' + campaign
+      @homeViewArgs.push campaign
     else
       @homeLink = c.homeLink = '/'
       @homeViewClass = 'views/HomeView'
@@ -95,6 +105,9 @@ module.exports = class ControlBarView extends CocoView
   onClickMultiplayer: (e) ->
     @openModalView new GameMenuModal showTab: 'multiplayer', level: @level, session: @session, supermodel: @supermodel
 
+  onClickSignupButton: ->
+    window.tracker?.trackEvent 'Started Signup', category: 'Play Level', label: 'Control Bar', level: @levelID
+
   onDisableControls: (e) -> @toggleControls e, false
   onEnableControls: (e) -> @toggleControls e, true
   toggleControls: (e, enabled) ->
@@ -105,6 +118,10 @@ module.exports = class ControlBarView extends CocoView
 
   onIPadMemoryWarning: (e) ->
     @hasReceivedMemoryWarning = true
+
+  onSessionDifficultyChanged: ->
+    return if @session.get('state')?.difficulty is @lastDifficulty
+    @render()
 
   destroy: ->
     @setupManager?.destroy()

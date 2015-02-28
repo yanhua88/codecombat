@@ -15,7 +15,7 @@ module.exports = class SimulateTabView extends CocoView
   constructor: (options) ->
     super(options)
     @simulatorsLeaderboardData = new SimulatorsLeaderboardData(me)
-    @simulatorsLeaderboardDataRes = @supermodel.addModelResource(@simulatorsLeaderboardData, 'top_simulators')
+    @simulatorsLeaderboardDataRes = @supermodel.addModelResource(@simulatorsLeaderboardData, 'top_simulators', {cache: false})
     @simulatorsLeaderboardDataRes.load()
     require 'vendor/aether-javascript'
     require 'vendor/aether-python'
@@ -27,6 +27,8 @@ module.exports = class SimulateTabView extends CocoView
   onLoaded: ->
     super()
     @render()
+    if document.location.hash is '#simulate' and not @simulator
+      @startSimulating()
 
   getRenderData: ->
     ctx = super()
@@ -42,10 +44,19 @@ module.exports = class SimulateTabView extends CocoView
   # Simulations
 
   onSimulateButtonClick: (e) ->
-    application.tracker?.trackEvent 'Simulate Button Click', {}
+    application.tracker?.trackEvent 'Simulate Button Click'
+    @startSimulating()
+
+  startSimulating: ->
+    @simulationPageRefreshTimeout = _.delay @refreshAndContinueSimulating, 20 * 60 * 1000
+    @simulateNextGame()
     $('#simulate-button').prop 'disabled', true
     $('#simulate-button').text 'Simulating...'
-    @simulateNextGame()
+
+  refreshAndContinueSimulating: =>
+    # We refresh the page every now and again to make sure simulations haven't gotten derailed by bogus games, and that simulators don't hang on to old, stale code or data.
+    document.location.hash = '#simulate'
+    document.location.reload()
 
   simulateNextGame: ->
     unless @simulator
@@ -66,7 +77,7 @@ module.exports = class SimulateTabView extends CocoView
   refresh: ->
     success = (numberOfGamesInQueue) ->
       $('#games-in-queue').text numberOfGamesInQueue
-    $.ajax '/queue/messagesInQueueCount', {success}
+    $.ajax '/queue/messagesInQueueCount', cache: false, success: success
 
   updateSimulationStatus: (simulationStatus, sessions) ->
     if simulationStatus is 'Fetching simulation data!'
@@ -101,7 +112,7 @@ module.exports = class SimulateTabView extends CocoView
         console.log jqxhr.responseText
 
   destroy: ->
-    clearInterval @refreshInterval
+    clearTimeout @simulationPageRefreshTimeout
     @simulator?.destroy()
     super()
 
@@ -120,15 +131,14 @@ class SimulatorsLeaderboardData extends CocoClass
     unless @me.get('anonymous')
       score = @me.get('simulatedBy') or 0
       queueSuccess = (@numberOfGamesInQueue) =>
-      promises.push $.ajax '/queue/messagesInQueueCount', {success: queueSuccess}
+      promises.push $.ajax '/queue/messagesInQueueCount', {success: queueSuccess, cache: false}
       @playersAbove = new SimulatorsLeaderboardCollection({order: 1, scoreOffset: score, limit: 4})
       promises.push @playersAbove.fetch()
       if score
         @playersBelow = new SimulatorsLeaderboardCollection({order: -1, scoreOffset: score, limit: 4})
         promises.push @playersBelow.fetch()
       success = (@myRank) =>
-
-      promises.push $.ajax "/db/user/me/simulator_leaderboard_rank?scoreOffset=#{score}", {success}
+      promises.push $.ajax("/db/user/me/simulator_leaderboard_rank?scoreOffset=#{score}", cache: false, success: success)
 
     @promise = $.when(promises...)
     @promise.then @onLoad

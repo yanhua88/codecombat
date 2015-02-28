@@ -27,7 +27,7 @@ module.exports = class LadderPlayModal extends ModalView
   constructor: (options, @level, @session, @team) ->
     super(options)
     @nameMap = {}
-    @otherTeam = if team is 'ogres' then 'humans' else 'ogres'
+    @otherTeam = if @team is 'ogres' then 'humans' else 'ogres'
     @startLoadingChallengersMaybe()
     @wizardType = ThangType.loadUniversalWizard()
 
@@ -195,13 +195,13 @@ class ChallengersData
     _.extend @, Backbone.Events
     score = @session?.get('totalScore') or 25
     @easyPlayer = new LeaderboardCollection(@level, {order: 1, scoreOffset: score - 5, limit: 1, team: @otherTeam})
-    @easyPlayer.fetch()
+    @easyPlayer.fetch cache: false
     @listenToOnce(@easyPlayer, 'sync', @challengerLoaded)
     @mediumPlayer = new LeaderboardCollection(@level, {order: 1, scoreOffset: score, limit: 1, team: @otherTeam})
-    @mediumPlayer.fetch()
+    @mediumPlayer.fetch cache: false
     @listenToOnce(@mediumPlayer, 'sync', @challengerLoaded)
     @hardPlayer = new LeaderboardCollection(@level, {order: -1, scoreOffset: score + 5, limit: 1, team: @otherTeam})
-    @hardPlayer.fetch()
+    @hardPlayer.fetch cache: false
     @listenToOnce(@hardPlayer, 'sync', @challengerLoaded)
 
   challengerLoaded: ->

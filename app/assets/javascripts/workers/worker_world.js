@@ -43,7 +43,7 @@ var console = {
       var args = [].slice.call(arguments);
       for(var i = 0; i < args.length; ++i) {
         if(args[i] && args[i].constructor) {
-          if(args[i].constructor.className === "Thang" || args[i].isComponent)
+          if(args[i].constructor.className === "Thang" || args[i].isComponent || args[i].isVector || args[i].isRectangle || args[i].isEllipse)
             args[i] = args[i].toString();
         }
       }
@@ -311,6 +311,7 @@ self.setupDebugWorldToRunUntilFrame = function (args) {
             self.debugWorld.levelSessionIDs = args.levelSessionIDs;
             self.debugWorld.submissionCount = args.submissionCount;
             self.debugWorld.flagHistory = args.flagHistory;
+            self.debugWorld.difficulty = args.difficulty;
             if (args.level)
                 self.debugWorld.loadFromLevel(args.level, true);
             self.debugWorld.debugging = true;
@@ -371,6 +372,7 @@ self.runWorld = function runWorld(args) {
     self.world.levelSessionIDs = args.levelSessionIDs;
     self.world.submissionCount = args.submissionCount;
     self.world.flagHistory = args.flagHistory || [];
+    self.world.difficulty = args.difficulty || 0;
     if(args.level)
       self.world.loadFromLevel(args.level, true);
     self.world.preloading = args.preload;
@@ -476,6 +478,7 @@ self.onWorldError = function onWorldError(error) {
   else {
     console.log("Non-UserCodeError:", error.toString() + "\n" + error.stack || error.stackTrace);
     self.postMessage({type: 'non-user-code-problem', problem: {message: error.toString()}});
+    return false;
   }
   /*  We don't actually have the recoverable property any more; hmm
   if(!error.recoverable) {

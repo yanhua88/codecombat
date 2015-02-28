@@ -37,7 +37,7 @@ module.exports = class LadderView extends RootView
   constructor: (options, @levelID) ->
     super(options)
     @level = @supermodel.loadModel(new Level(_id: @levelID), 'level').model
-    @sessions = @supermodel.loadCollection(new LevelSessionsCollection(levelID), 'your_sessions').model
+    @sessions = @supermodel.loadCollection(new LevelSessionsCollection(@levelID), 'your_sessions', {cache: false}).model
 
     @teams = []
 
@@ -64,14 +64,14 @@ module.exports = class LadderView extends RootView
     @insertSubView(@ladderTab = new LadderTabView({}, @level, @sessions))
     @insertSubView(@myMatchesTab = new MyMatchesTabView({}, @level, @sessions))
     @insertSubView(@simulateTab = new SimulateTabView())
-    @refreshInterval = setInterval(@fetchSessionsAndRefreshViews.bind(@), 20 * 1000)
+    @refreshInterval = setInterval(@fetchSessionsAndRefreshViews.bind(@), 60 * 1000)
     hash = document.location.hash[1..] if document.location.hash
     if hash and not (hash in ['my-matches', 'simulate', 'ladder', 'prizes', 'rules', 'winners'])
       @showPlayModal(hash) if @sessions.loaded
 
   fetchSessionsAndRefreshViews: ->
     return if @destroyed or application.userIsIdle or (new Date() - 2000 < @lastRefreshTime) or not @supermodel.finished()
-    @sessions.fetch({'success': @refreshViews})
+    @sessions.fetch success: @refreshViews, cache: false
 
   refreshViews: =>
     return if @destroyed or application.userIsIdle
@@ -98,7 +98,7 @@ module.exports = class LadderView extends RootView
 
   onClickedLink: (e) ->
     link = $(e.target).closest('a').attr('href')
-    if link?.startsWith('/play/level') and me.get('anonymous')
+    if link? and _.string.startsWith(link, '/play/level') and me.get('anonymous')
       e.stopPropagation()
       e.preventDefault()
       @showApologeticSignupModal()

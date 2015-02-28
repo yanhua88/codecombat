@@ -19,7 +19,7 @@ module.exports = class MainPlayView extends RootView
     super options
     @levelStatusMap = {}
     @levelPlayCountMap = {}
-    @sessions = @supermodel.loadCollection(new LevelSessionsCollection(), 'your_sessions', null, 0).model
+    @sessions = @supermodel.loadCollection(new LevelSessionsCollection(), 'your_sessions', {cache: false}, 0).model
     @listenToOnce @sessions, 'sync', @onSessionsLoaded
     @getLevelPlayCounts()
 
@@ -332,6 +332,6 @@ campaigns = [
   {id: 'old_beginner', name: 'Old Beginner Campaign', description: '... in which you learn the wizardry of programming.', levels: tutorials}
   {id: 'multiplayer', name: 'Multiplayer Arenas', description: '... in which you code head-to-head against other players.', levels: arenas}
   {id: 'dev', name: 'Random Harder Levels', description: '... in which you learn the interface while doing something a little harder.', levels: experienced}
-  {id: 'classic_algorithms' ,name: 'Classic Algorithms', description: '... in which you learn the most popular algorithms in Computer Science.', levels: classicAlgorithms}
-  {id: 'player_created', name: 'Player-Created', description: '... in which you battle against the creativity of your fellow <a href=\"/contribute#artisan\">Artisan Wizards</a>.', levels: playerCreated}
+  {id: 'classic_algorithms', name: 'Classic Algorithms', description: '... in which you learn the most popular algorithms in Computer Science.', levels: classicAlgorithms}
+  {id: 'player_created', name: 'Player-Created', description: '... in which you battle against the creativity of your fellow <a href=\"/contribute/artisan\">Artisan Wizards</a>.', levels: playerCreated}
 ]

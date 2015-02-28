@@ -62,7 +62,7 @@ module.exports = class TomeView extends CocoView
     programmableThangs = _.filter @options.thangs, 'isProgrammable'
     @createSpells programmableThangs, programmableThangs[0]?.world  # Do before spellList, thangList, and castButton
     @spellList = @insertSubView new SpellListView spells: @spells, supermodel: @supermodel, level: @options.level
-    @castButton = @insertSubView new CastButtonView spells: @spells, levelID: @options.levelID, session: @options.session
+    @castButton = @insertSubView new CastButtonView spells: @spells, level: @options.level, session: @options.session
     @teamSpellMap = @generateTeamSpellMap(@spells)
     unless programmableThangs.length
       @cast()
@@ -80,7 +80,7 @@ module.exports = class TomeView extends CocoView
   onCommentMyCode: (e) ->
     for spellKey, spell of @spells when spell.canWrite()
       console.log 'Commenting out', spellKey
-      commentedSource = 'return;  // Commented out to stop infinite loop.\n' + spell.getSource()
+      commentedSource = spell.view.commentOutMyCode() + 'Commented out to stop infinite loop.\n' + spell.getSource()
       spell.view.updateACEText commentedSource
       spell.view.recompile false
     @cast()
@@ -112,6 +112,7 @@ module.exports = class TomeView extends CocoView
     for thang in programmableThangs
       continue if @thangSpells[thang.id]?
       @thangSpells[thang.id] = []
+      thang.programmableMethods ?= plan: {name: 'plan', source: '// Should fill in some default source.', permissions: {readwrite: ['humans']}}
       for methodName, method of thang.programmableMethods
         pathComponents = [thang.id, methodName]
         if method.cloneOf
@@ -133,6 +134,7 @@ module.exports = class TomeView extends CocoView
             language: language
             spectateView: @options.spectateView
             spectateOpponentCodeLanguage: @options.spectateOpponentCodeLanguage
+            observing: @options.observing
             levelID: @options.levelID
             level: @options.level
 
@@ -162,8 +164,12 @@ module.exports = class TomeView extends CocoView
     if realTime
       sessionState.submissionCount = (sessionState.submissionCount ? 0) + 1
       sessionState.flagHistory = _.filter sessionState.flagHistory ? [], (event) => event.team isnt (@options.session.get('team') ? 'humans')
+      sessionState.lastUnsuccessfulSubmissionTime = new Date() if @options.level.get 'replayable'
       @options.session.set 'state', sessionState
-    Backbone.Mediator.publish 'tome:cast-spells', spells: @spells, preload: preload, realTime: realTime, submissionCount: sessionState.submissionCount ? 0, flagHistory: sessionState.flagHistory ? []
+    difficulty = sessionState.difficulty ? 0
+    if @options.observing
+      difficulty = Math.max 0, difficulty - 1  # Show the difficulty they won, not the next one.
+    Backbone.Mediator.publish 'tome:cast-spells', spells: @spells, preload: preload, realTime: realTime, submissionCount: sessionState.submissionCount ? 0, flagHistory: sessionState.flagHistory ? [], difficulty: difficulty
 
   onToggleSpellList: (e) ->
     @spellList.rerenderEntries()
@@ -203,7 +209,7 @@ module.exports = class TomeView extends CocoView
       @spellTabView = spell.tabView
       @$el.find('#' + @spellView.id).after(@spellView.el).remove()
       @$el.find('#' + @spellTabView.id).after(@spellTabView.el).remove()
-      @castButton.attachTo @spellView
+      @castButton?.attachTo @spellView
       Backbone.Mediator.publish 'tome:spell-shown', thang: thang, spell: spell
     @updateSpellPalette thang, spell
     @spellList.setThangAndSpell thang, spell

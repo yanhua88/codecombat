@@ -1,7 +1,7 @@
 CocoView = require 'views/core/CocoView'
 template = require 'templates/play/level/level_loading'
 utils = require 'core/utils'
-SubscribeModal = require 'views/play/modal/SubscribeModal'
+SubscribeModal = require 'views/core/SubscribeModal'
 
 module.exports = class LevelLoadingView extends CocoView
   id: 'level-loading-view'
@@ -46,7 +46,7 @@ module.exports = class LevelLoadingView extends CocoView
     goalContainer = @$el.find('.level-loading-goals')
     goalList = goalContainer.find('ul')
     goalCount = 0
-    for goalID, goal of @level.get('goals') when (not goal.team or goal.team is e.team) and not goal.hiddenGoal
+    for goalID, goal of @level.get('goals') when (not goal.team or goal.team is (e.team or 'humans')) and not goal.hiddenGoal
       name = utils.i18n goal, 'name'
       goalList.append $('<li>' + name + '</li>')
       ++goalCount
@@ -99,6 +99,7 @@ module.exports = class LevelLoadingView extends CocoView
     @$el.find('.right-wing').css right: '-100%', backgroundPosition: 'left -400px top 0'
     Backbone.Mediator.publish 'audio-player:play-sound', trigger: 'loading-view-unveil', volume: 0.5
     _.delay @onUnveilEnded, duration * 1000
+    $('#level-footer-background').detach().appendTo('#page-container').slideDown(duration * 1000)
 
   onUnveilEnded: =>
     return if @destroyed
@@ -110,8 +111,7 @@ module.exports = class LevelLoadingView extends CocoView
 
   onClickStartSubscription: (e) ->
     @openModalView new SubscribeModal()
-    window.tracker?.trackEvent 'Show subscription modal', category: 'Subscription', label: 'level loading'
-    window.tracker?.trackPageView "subscription/show-modal", ['Google Analytics']
+    window.tracker?.trackEvent 'Show subscription modal', category: 'Subscription', label: 'level loading', level: @options.level.get('slug')
 
   onSubscribed: ->
     document.location.reload()

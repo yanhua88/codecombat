@@ -199,7 +199,8 @@ module.exports = nativeDescription: "简体中文", englishDescription: "Chinese
 
   play_level:
     done: "完成"
-    home: "主页" # Not used any more, will be removed soon.
+    tome_submit_button: "运行"
+	home: "主页" # Not used any more, will be removed soon.
     level: "等级" # Like "Level: Dungeons of Kithgard"
     skip: "跳过"
     game_menu: "游戏菜单"
